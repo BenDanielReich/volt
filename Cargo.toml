@@ -1,0 +1,15 @@
+[package]
+name = "voltc"
+version = "0.1.0"
+edition = "2021"
+description = "Volt — a C++-like language for microcontrollers"
+license = "MIT"
+default-run = "voltc"
+
+[[bin]]
+name = "voltc"
+path = "src/main.rs"
+
+[lib]
+name = "voltc"
+path = "src/lib.rs"
