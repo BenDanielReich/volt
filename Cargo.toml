@@ -10,6 +10,24 @@ default-run = "voltc"
 name = "voltc"
 path = "src/main.rs"
 
+[[bin]]
+name = "volt"
+path = "src/bin/volt.rs"
+required-features = ["app"]
+
 [lib]
 name = "voltc"
 path = "src/lib.rs"
+
+[features]
+default = []
+app = ["dep:wry", "dep:tao"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tao = { version = "0.34", optional = true }
+wry = { version = "0.53", optional = true }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

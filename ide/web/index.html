@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Volt IDE</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --panel: #161b22;
+      --border: #2a3340;
+      --text: #e6edf3;
+      --muted: #8b9bb0;
+      --accent: #3dd6c6;
+      --accent-dim: #1f6f68;
+      --err: #f85149;
+      --warn: #d29922;
+      --ok: #3fb950;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+    #app { display: grid; grid-template-rows: 48px 1fr 28px; height: 100%; }
+    header {
+      display: flex; align-items: center; gap: 12px; padding: 0 14px;
+      background: var(--panel); border-bottom: 1px solid var(--border);
+    }
+    .logo { font-weight: 700; letter-spacing: 0.08em; color: var(--accent); }
+    .logo span { color: var(--muted); font-weight: 500; letter-spacing: 0; margin-left: 8px; }
+    header select, header button, header input[type="search"] {
+      background: #0e1116; color: var(--text); border: 1px solid var(--border);
+      border-radius: 6px; padding: 6px 10px; cursor: pointer;
+    }
+    header button.primary { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+    header button:hover { border-color: var(--accent); }
+    .board-picker { position: relative; min-width: 260px; flex: 0 1 320px; }
+    .board-picker input[type="search"] {
+      width: 100%; cursor: text; font: inherit; padding-right: 28px;
+    }
+    .board-picker input[type="search"]::placeholder { color: var(--muted); }
+    .board-picker .chev {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      color: var(--muted); pointer-events: none; font-size: 10px;
+    }
+    .board-list {
+      position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px);
+      min-width: 360px; max-height: 340px; overflow: auto;
+      background: #161b22; border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+    }
+    .board-list button {
+      display: block; width: 100%; text-align: left; background: none; border: 0;
+      color: var(--text); padding: 8px 12px; cursor: pointer; font: inherit;
+      border-bottom: 1px solid #21262d;
+    }
+    .board-list button:last-child { border-bottom: 0; }
+    .board-list button:hover, .board-list button.active { background: #21262d; }
+    .board-list .b-name { display: block; }
+    .board-list .b-meta { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+    .board-list .empty { padding: 12px; color: var(--muted); }
+    .spacer { flex: 1; }
+    kbd { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted);
+      border: 1px solid var(--border); padding: 1px 5px; border-radius: 4px; }
+    #main { display: grid; grid-template-columns: 220px 1fr 1fr; min-height: 0; }
+    #files { background: var(--panel); border-right: 1px solid var(--border); overflow: auto; padding: 0; }
+    #files details.file-group { border-bottom: 1px solid var(--border); }
+    #files summary {
+      list-style: none; display: flex; align-items: center; gap: 6px;
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); margin: 0; padding: 8px 10px 8px 12px; cursor: pointer;
+      user-select: none;
+    }
+    #files summary::-webkit-details-marker { display: none; }
+    #files summary::before { content: '▸'; font-size: 10px; width: 10px; color: var(--muted); }
+    #files details[open] > summary::before { content: '▾'; }
+    #files summary .label { flex: 1; }
+    #files button.file-item {
+      display: block; width: 100%; text-align: left; background: none; border: 0;
+      color: var(--text); padding: 7px 14px 7px 28px; cursor: pointer; font: inherit;
+    }
+    #files button.link, header button.link {
+      display: inline; width: auto; padding: 0; color: var(--muted); font-size: 11px;
+      text-transform: none; letter-spacing: 0;
+    }
+    #files button.link:hover { color: var(--accent); background: none; }
+    #files button.file-item:hover, #files button.file-item.active { background: #21262d; color: var(--accent); }
+    #files .empty { padding: 6px 14px 10px 28px; color: var(--muted); font-size: 12px; }
+    #editor { min-width: 0; min-height: 0; }
+    #side {
+      display: grid; grid-template-rows: auto 1fr; border-left: 1px solid var(--border); min-width: 0;
+    }
+    .tabs { display: flex; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .tabs button {
+      background: none; border: 0; color: var(--muted); padding: 8px 14px; cursor: pointer; font: inherit;
+    }
+    .tabs button.active { color: var(--accent); border-bottom: 2px solid var(--accent); }
+    .pane { overflow: auto; padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap; color: #c9d1d9; }
+    .diag { margin-bottom: 8px; }
+    .diag.error { color: var(--err); }
+    .diag.warning { color: var(--warn); }
+    footer {
+      display: flex; align-items: center; gap: 16px; padding: 0 14px;
+      background: var(--panel); border-top: 1px solid var(--border); color: var(--muted); font-size: 12px;
+    }
+    footer .ok { color: var(--ok); }
+    footer .bad { color: var(--err); }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="logo">VOLT <span>IDE</span></div>
+      <div class="board-picker" id="boardpicker">
+        <input id="boardsearch" type="search" placeholder="Search boards…" autocomplete="off" spellcheck="false" aria-label="Search boards" />
+        <span class="chev">▾</span>
+        <input type="hidden" id="target" value="host" />
+        <div id="boardlist" class="board-list" hidden></div>
+      </div>
+      <select id="sport" title="Serial port"></select>
+      <button class="primary" id="compile">Compile <kbd id="runkey">Ctrl+Enter</kbd></button>
+      <button id="check">Check</button>
+      <button id="newfile">New</button>
+      <button id="savefile">Save</button>
+      <div class="spacer"></div>
+      <span id="status">ready</span>
+    </header>
+    <div id="main">
+      <nav id="files">
+        <details class="file-group" open data-group="libraries">
+          <summary><span class="label">Libraries</span> <button type="button" class="link" id="openaddons">folder</button></summary>
+          <div id="addonlist"></div>
+        </details>
+        <details class="file-group" open data-group="examples">
+          <summary><span class="label">Examples</span></summary>
+          <div id="filelist"></div>
+        </details>
+        <details class="file-group" open data-group="files">
+          <summary><span class="label">Files</span> <button type="button" class="link" id="openprojects">folder</button></summary>
+          <div id="projectlist"></div>
+        </details>
+      </nav>
+      <div id="editor"></div>
+      <div id="side">
+        <div class="tabs">
+          <button class="active" data-tab="problems">Problems</button>
+          <button data-tab="c">Generated C</button>
+          <button data-tab="report">Report</button>
+        </div>
+        <div id="pane" class="pane">Compile to see diagnostics, C, and the resource report.</div>
+      </div>
+    </div>
+    <footer>
+      <span id="diagcount">0 problems</span>
+      <span id="compileok"></span>
+      <span class="spacer"></span>
+      <span>voltc <span id="ver"></span></span>
+      <span id="homepath" title="Volt projects folder"></span>
+    </footer>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+  <script>
+    const voltMonarch = {
+      keywords: [
+        'module','use','struct','enum','const','static','reg','extern','if','else','while','for',
+        'return','break','continue','as','true','false','function','match','impl','trait','type',
+        'export','internal','comptime','async','await','when','asm','mut','self','pin','peripheral',
+        'void','int','bool','u8','u16','u32','u64','i8','i16','i32','i64','usize','isize','f32','f64','loop'
+      ],
+      tokenizer: {
+        root: [
+          [/\/\/.*$/, 'comment'],
+          [/\/\*/, 'comment', '@comment'],
+          [/#include\b.*/, 'preprocessor'],
+          [/#define\b.*/, 'preprocessor'],
+          [/#change\b.*/, 'preprocessor'],
+          [/#\[[^\]]*\]/, 'annotation'],
+          [/\b(0x[0-9a-fA-F_]+|0b[01_]+|\d[\d_]*(\.\d[\d_]*)?)/, 'number'],
+          [/"([^"\\]|\\.)*"/, 'string'],
+          [/'([^'\\]|\\.)'/, 'string'],
+          [/\b[uif]\d+\b/, 'type'],
+          [/[a-zA-Z_][\w]*/, {
+            cases: { '@keywords': 'keyword', '@default': 'identifier' }
+          }],
+          [/[{}()\[\]]/, 'delimiter.bracket'],
+          [/[;,.]/, 'delimiter'],
+          [/\+%|-%|\*%|\+\||-\||\*\|/, 'operator'],
+        ],
+        comment: [
+          [/\*\//, 'comment', '@pop'],
+          [/./, 'comment']
+        ]
+      }
+    };
+
+    let editor, currentTab = 'problems', lastResult = null, currentName = 'main.volt';
+
+    function pane() { return document.getElementById('pane'); }
+
+    function showTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('.tabs button').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === tab);
+      });
+      renderSide();
+    }
+
+    function renderSide() {
+      if (!lastResult) return;
+      if (currentTab === 'problems') {
+        const ds = lastResult.diagnostics || [];
+        if (!ds.length) {
+          pane().textContent = lastResult.ok ? 'No problems.' : 'Compile failed with no messages.';
+          return;
+        }
+        pane().innerHTML = ds.map(d =>
+          `<div class="diag ${d.level}">${d.level}: ${escapeHtml(d.message)}  (${d.line}:${d.col})</div>`
+        ).join('');
+      } else if (currentTab === 'c') {
+        pane().textContent = lastResult.c_source || '(no C — fix errors first)';
+      } else {
+        pane().textContent = lastResult.report || '(no report)';
+      }
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    }
+
+    let allBoards = [];
+    let boardHits = [];
+    let boardCursor = 0;
+
+    function boardHaystack(b) {
+      return [b.id, b.name, b.fqbn, b.mcu, b.package, ...(b.aliases || [])]
+        .filter(Boolean).join(' ').toLowerCase();
+    }
+
+    function findBoard(id) {
+      return allBoards.find(b => b.id === id) || allBoards[0];
+    }
+
+    function boardLabel(b) {
+      if (!b) return '';
+      return b.fqbn ? `${b.name}  ·  ${b.fqbn}` : b.name;
+    }
+
+    function setBoard(id, recheck) {
+      const b = findBoard(id);
+      if (!b) return;
+      document.getElementById('target').value = b.id;
+      document.getElementById('boardsearch').value = boardLabel(b);
+      try { localStorage.setItem('volt.board', b.id); } catch (_) {}
+      hideBoardList();
+      if (recheck && editor) analyze('check');
+    }
+
+    function hideBoardList() {
+      document.getElementById('boardlist').hidden = true;
+    }
+
+    function filterBoards(q) {
+      const n = (q || '').trim().toLowerCase();
+      if (!n) return allBoards.slice();
+      return allBoards.filter(b => boardHaystack(b).includes(n));
+    }
+
+    function renderBoardList(q) {
+      const list = document.getElementById('boardlist');
+      boardHits = filterBoards(q);
+      boardCursor = 0;
+      if (!boardHits.length) {
+        list.innerHTML = '<div class="empty">No boards match “' + escapeHtml(q.trim()) + '”</div>';
+        list.hidden = false;
+        return;
+      }
+      list.innerHTML = boardHits.map((b, i) => {
+        const meta = [b.mcu, b.fqbn || b.id].filter(Boolean).join('  ·  ');
+        return `<button type="button" data-id="${escapeHtml(b.id)}" class="${i === 0 ? 'active' : ''}">` +
+          `<span class="b-name">${escapeHtml(b.name)}</span>` +
+          `<span class="b-meta">${escapeHtml(meta)}</span></button>`;
+      }).join('');
+      list.querySelectorAll('button').forEach(btn => {
+        btn.onmousedown = (e) => { e.preventDefault(); setBoard(btn.dataset.id, true); };
+      });
+      list.hidden = false;
+    }
+
+    function moveBoardCursor(delta) {
+      if (!boardHits.length) return;
+      boardCursor = (boardCursor + delta + boardHits.length) % boardHits.length;
+      const list = document.getElementById('boardlist');
+      list.querySelectorAll('button').forEach((btn, i) => {
+        btn.classList.toggle('active', i === boardCursor);
+        if (i === boardCursor) btn.scrollIntoView({ block: 'nearest' });
+      });
+    }
+
+    function wireBoardSearch() {
+      const input = document.getElementById('boardsearch');
+      input.addEventListener('focus', () => {
+        input.select();
+        renderBoardList(input.value === boardLabel(findBoard(document.getElementById('target').value)) ? '' : input.value);
+      });
+      input.addEventListener('input', () => renderBoardList(input.value));
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); moveBoardCursor(1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); moveBoardCursor(-1); }
+        else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (boardHits[boardCursor]) setBoard(boardHits[boardCursor].id, true);
+        } else if (e.key === 'Escape') {
+          setBoard(document.getElementById('target').value, false);
+          input.blur();
+        }
+      });
+      input.addEventListener('blur', () => {
+        setTimeout(() => {
+          setBoard(document.getElementById('target').value, false);
+        }, 120);
+      });
+    }
+
+    async function analyze(kind) {
+      const source = editor.getValue();
+      const target = document.getElementById('target').value;
+      document.getElementById('status').textContent = 'compiling…';
+      const res = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source, target, name: currentName })
+      });
+      lastResult = await res.json();
+      const ds = lastResult.diagnostics || [];
+      document.getElementById('diagcount').textContent =
+        ds.length + (ds.length === 1 ? ' problem' : ' problems');
+      const ok = document.getElementById('compileok');
+      if (lastResult.ok) {
+        ok.textContent = 'ok';
+        ok.className = 'ok';
+      } else {
+        ok.textContent = 'failed';
+        ok.className = 'bad';
+      }
+      document.getElementById('status').textContent = kind;
+      if (window.monaco && editor) {
+        const model = editor.getModel();
+        const markers = ds.map(d => ({
+          severity: d.level === 'warning' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error,
+          message: d.message,
+          startLineNumber: d.line,
+          startColumn: d.col,
+          endLineNumber: d.end_line || d.line,
+          endColumn: Math.max(d.end_col || d.col + 1, d.col + 1)
+        }));
+        monaco.editor.setModelMarkers(model, 'volt', markers);
+      }
+      if (kind === 'compile' && lastResult.ok) showTab('c');
+      else renderSide();
+    }
+
+    function fillFileList(el, files, emptyText, selectFirst) {
+      el.innerHTML = '';
+      if (!files || !files.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = emptyText;
+        el.appendChild(empty);
+        return;
+      }
+      files.forEach((ex, i) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'file-item';
+        b.textContent = ex.name;
+        b.onclick = () => {
+          currentName = ex.name;
+          editor.setValue(ex.source);
+          document.querySelectorAll('#files button.file-item').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          analyze('check');
+        };
+        if (selectFirst && i === 0) b.classList.add('active');
+        el.appendChild(b);
+      });
+    }
+
+    function wireFileGroups() {
+      document.querySelectorAll('.file-group').forEach(d => {
+        const key = 'volt.group.' + d.dataset.group;
+        try {
+          const saved = localStorage.getItem(key);
+          if (saved === '0') d.open = false;
+          if (saved === '1') d.open = true;
+        } catch (_) {}
+        d.addEventListener('toggle', () => {
+          try { localStorage.setItem(key, d.open ? '1' : '0'); } catch (_) {}
+        });
+      });
+    }
+
+    async function refreshUserFiles() {
+      const [projects, addons] = await Promise.all([
+        fetch('/api/projects').then(r => r.json()).catch(() => []),
+        fetch('/api/addons').then(r => r.json()).catch(() => [])
+      ]);
+      fillFileList(document.getElementById('projectlist'), projects, 'Nothing saved yet.');
+      fillFileList(document.getElementById('addonlist'), addons, 'Drop .volt files in this folder.');
+      return projects;
+    }
+
+    async function saveCurrent() {
+      if (!editor) return;
+      let name = currentName || 'untitled.volt';
+      if (name === 'untitled.volt') {
+        const typed = window.prompt('Name this program', 'untitled.volt');
+        if (!typed) return;
+        name = typed;
+      }
+      const res = await fetch('/api/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, source: editor.getValue() })
+      }).then(r => r.json());
+      if (!res.ok) {
+        document.getElementById('status').textContent = res.error || 'save failed';
+        return;
+      }
+      currentName = name.endsWith('.volt') ? name : (name + '.volt');
+      document.getElementById('status').textContent = 'saved';
+      await refreshUserFiles();
+    }
+
+    function openFolder(which) {
+      fetch('/api/open-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ which })
+      });
+    }
+
+    async function boot() {
+      const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+      document.getElementById('runkey').textContent = mac ? '⌘↵' : 'Ctrl+Enter';
+      const meta = await fetch('/api/meta').then(r => r.json());
+      document.getElementById('ver').textContent = meta.version;
+      allBoards = meta.boards || (meta.targets || []).map(id => ({ id, name: id }));
+      const saved = (() => { try { return localStorage.getItem('volt.board'); } catch (_) { return null; } })();
+      const initial = (saved && allBoards.some(b => b.id === saved)) ? saved
+        : ((allBoards[0] && allBoards[0].id) || 'host');
+      wireBoardSearch();
+      setBoard(initial, false);
+      const sel = document.getElementById('target');
+      const sport = document.getElementById('sport');
+      const none = document.createElement('option');
+      none.value = '';
+      none.textContent = (meta.ports && meta.ports.length) ? 'Serial port' : 'No serial port';
+      sport.appendChild(none);
+      (meta.ports || []).forEach(p => {
+        const o = document.createElement('option');
+        o.value = p.address;
+        o.textContent = p.label || p.address;
+        sport.appendChild(o);
+      });
+      if (meta.ports && meta.ports[0]) sport.value = meta.ports[0].address;
+      if (meta.workspace && meta.workspace.projects) {
+        document.getElementById('homepath').textContent = meta.workspace.projects;
+      }
+      wireFileGroups();
+      const examples = await fetch('/api/examples').then(r => r.json());
+      const projects = await refreshUserFiles();
+      fillFileList(document.getElementById('filelist'), examples, 'No examples.', !projects.length);
+
+      require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs' } });
+      require(['vs/editor/editor.main'], () => {
+        monaco.languages.register({ id: 'volt' });
+        monaco.languages.setMonarchTokensProvider('volt', voltMonarch);
+        monaco.languages.setLanguageConfiguration('volt', {
+          comments: { lineComment: '//', blockComment: ['/*', '*/'] },
+          brackets: [['{','}'],['(',')'],['[',']']],
+          autoClosingPairs: [
+            {open:'{',close:'}'},{open:'(',close:')'},{open:'[',close:']'},
+            {open:'"',close:'"'},{open:"'",close:"'"}
+          ]
+        });
+        monaco.languages.registerCompletionItemProvider('volt', {
+          triggerCharacters: ['.'],
+          provideCompletionItems: async (model, pos) => {
+            const offset = model.getOffsetAt(pos);
+            const res = await fetch('/api/complete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ source: model.getValue(), offset, target: sel.value })
+            }).then(r => r.json());
+            const kinds = monaco.languages.CompletionItemKind;
+            return {
+              suggestions: (res.items || []).map(it => ({
+                label: it.label,
+                kind: it.kind === 'keyword' ? kinds.Keyword
+                  : it.kind === 'snippet' ? kinds.Snippet : kinds.Variable,
+                insertText: it.insert,
+                insertTextRules: it.kind === 'snippet'
+                  ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
+                detail: it.detail
+              }))
+            };
+          }
+        });
+        monaco.languages.registerHoverProvider('volt', {
+          provideHover: async (model, pos) => {
+            const offset = model.getOffsetAt(pos);
+            const h = await fetch('/api/hover', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ source: model.getValue(), offset, target: sel.value })
+            }).then(r => r.json());
+            if (!h.title) return null;
+            return { contents: [{ value: `**${h.title}**\n\n${h.detail}` }] };
+          }
+        });
+        editor = monaco.editor.create(document.getElementById('editor'), {
+          value: (projects[0] && projects[0].source) || (examples[0] ? examples[0].source : 'int main() {\n    return 0\n}\n'),
+          language: 'volt',
+          theme: 'vs-dark',
+          automaticLayout: true,
+          minimap: { enabled: false },
+          fontSize: 14,
+          tabSize: 4
+        });
+        currentName = (projects[0] && projects[0].name) || (examples[0] ? examples[0].name : 'main.volt');
+        let timer;
+        editor.onDidChangeModelContent(() => {
+          clearTimeout(timer);
+          timer = setTimeout(() => analyze('check'), 450);
+        });
+        analyze('check');
+      });
+    }
+
+    document.querySelectorAll('.tabs button').forEach(b => {
+      b.onclick = () => showTab(b.dataset.tab);
+    });
+    document.getElementById('compile').onclick = () => analyze('compile');
+    document.getElementById('check').onclick = () => analyze('check');
+    document.getElementById('newfile').onclick = () => {
+      currentName = 'untitled.volt';
+      editor.setValue('module app\n\n#include <volt/board>\n\nfunction setup() {\n    pinmode(LED_BUILTIN, PinMode.Output)\n}\n\nfunction loop() {\n    digital_write(LED_BUILTIN, Level.High)\n    delay_ms(500)\n    digital_write(LED_BUILTIN, Level.Low)\n    delay_ms(500)\n}\n');
+    };
+    document.getElementById('savefile').onclick = () => saveCurrent();
+    document.getElementById('openprojects').onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openFolder('projects');
+    };
+    document.getElementById('openaddons').onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openFolder('addons');
+    };
+    window.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        analyze('compile');
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        saveCurrent();
+      }
+    });
+    boot().catch(err => {
+      document.getElementById('status').textContent = String(err);
+    });
+  </script>
+</body>
+</html>

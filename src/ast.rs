@@ -17,6 +17,11 @@ pub enum Item {
     Const(ConstItem),
     Static(StaticItem),
     Reg(RegItem),
+    TypeAlias(TypeAliasItem),
+    Impl(ImplItem),
+    Trait(TraitItem),
+    Pin(PinItem),
+    Peripheral(PeripheralItem),
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +54,10 @@ pub struct IncludeItem {
 pub struct FnItem {
     pub attrs: Vec<Attribute>,
     pub is_extern: bool,
+    pub is_export: bool,
+    pub is_internal: bool,
+    pub is_comptime: bool,
+    pub is_async: bool,
     pub return_ty: Type,
     pub name: Ident,
     pub params: Vec<Param>,
@@ -60,6 +69,7 @@ pub struct FnItem {
 pub struct Param {
     pub ty: Type,
     pub name: Ident,
+    pub is_self: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +120,51 @@ pub struct RegItem {
     pub ty: Type,
     pub name: Ident,
     pub address: Expr,
+    pub bits: Vec<BitField>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct BitField {
+    pub name: Ident,
+    pub start: Expr,
+    pub width: Option<Expr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeAliasItem {
+    pub name: Ident,
+    pub ty: Type,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImplItem {
+    pub trait_name: Option<Ident>,
+    pub ty: Type,
+    pub methods: Vec<FnItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitItem {
+    pub name: Ident,
+    pub methods: Vec<FnItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct PinItem {
+    pub name: Ident,
+    pub reg: Ident,
+    pub bit: Ident,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct PeripheralItem {
+    pub name: Ident,
     pub span: Span,
 }
 
@@ -124,8 +179,17 @@ pub enum TypeKind {
     Named(Ident),
     Void,
     Primitive(PrimitiveTy),
+    Bits {
+        signed: bool,
+        width: u8,
+    },
     Pointer(Box<Type>),
+    Ref {
+        mutable: bool,
+        inner: Box<Type>,
+    },
     Array(Box<Type>, Box<Expr>),
+    SelfTy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +225,10 @@ pub enum Stmt {
     While(WhileStmt),
     For(ForStmt),
     Loop(Block),
+    Match(MatchStmt),
+    When(WhenStmt),
+    Await(Expr, Span),
+    Asm(AsmStmt),
     Return(Option<Expr>, Span),
     Break(Span),
     Continue(Span),
@@ -224,6 +292,57 @@ pub struct ForStmt {
 }
 
 #[derive(Debug, Clone)]
+pub struct MatchStmt {
+    pub scrutinee: Expr,
+    pub arms: Vec<MatchArm>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Box<Stmt>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Wildcard(Span),
+    Ident(Ident),
+    Enum(Ident, Ident),
+    Int(IntLit, Span),
+}
+
+#[derive(Debug, Clone)]
+pub struct WhenStmt {
+    pub cond: Expr,
+    pub then_branch: Block,
+    pub else_branch: Option<Block>,
+    pub taken: Option<bool>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct AsmStmt {
+    pub template: String,
+    pub binds: Vec<AsmBind>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct AsmBind {
+    pub dir: AsmDir,
+    pub name: Ident,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsmDir {
+    In,
+    Out,
+    InOut,
+}
+
+#[derive(Debug, Clone)]
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
@@ -244,6 +363,7 @@ pub enum ExprKind {
     Field(Box<Expr>, Ident),
     Cast(Box<Expr>, Type),
     Paren(Box<Expr>),
+    Await(Box<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -260,6 +380,7 @@ pub enum UnOp {
     BitNot,
     Deref,
     AddrOf,
+    AddrOfMut,
     PreInc,
     PreDec,
     PostInc,
@@ -286,6 +407,12 @@ pub enum BinOp {
     Le,
     Gt,
     Ge,
+    WrapAdd,
+    WrapSub,
+    WrapMul,
+    SatAdd,
+    SatSub,
+    SatMul,
 }
 
 impl AssignOp {
@@ -345,6 +472,12 @@ impl BinOp {
             Self::Le => "<=",
             Self::Gt => ">",
             Self::Ge => ">=",
+            Self::WrapAdd => "+%",
+            Self::WrapSub => "-%",
+            Self::WrapMul => "*%",
+            Self::SatAdd => "+|",
+            Self::SatSub => "-|",
+            Self::SatMul => "*|",
         }
     }
 }
@@ -357,6 +490,7 @@ impl UnOp {
             Self::BitNot => "~",
             Self::Deref => "*",
             Self::AddrOf => "&",
+            Self::AddrOfMut => "&mut ",
             Self::PreInc | Self::PostInc => "++",
             Self::PreDec | Self::PostDec => "--",
         }

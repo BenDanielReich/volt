@@ -1,5 +1,4 @@
-#include "volt_rt.h"
-
+#include <stdint.h>
 #include <stdio.h>
 
 #if defined(_WIN32)
@@ -33,6 +32,11 @@ void digital_write(uint8_t pin, uint8_t level) {
 }
 
 uint8_t digital_read(uint8_t pin) {
+    (void)pin;
+    return 0;
+}
+
+uint16_t analog_read(uint8_t pin) {
     (void)pin;
     return 0;
 }

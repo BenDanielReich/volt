@@ -1,18 +1,14 @@
-module blink;
+module blink
 
-#include <volt/gpio>
-#include <volt/delay>
-
-#define LED 13
-#define DELAY 500
+#include <volt/board>
 
 function setup() {
-    pin_mode(LED, PinMode.Output);
+    pinmode(LED_BUILTIN, PinMode.Output)
 }
 
 function loop() {
-    digital_write(LED, Level.High);
-    delay_ms(DELAY);
-    digital_write(LED, Level.Low);
-    delay_ms(DELAY);
+    digital_write(LED_BUILTIN, Level.High)
+    delay_ms(500)
+    digital_write(LED_BUILTIN, Level.Low)
+    delay_ms(500)
 }

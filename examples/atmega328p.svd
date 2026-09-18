@@ -1,0 +1,19 @@
+<device>
+  <name>ATmega328P</name>
+  <peripheral>
+    <name>PORTB</name>
+    <baseAddress>0x20</baseAddress>
+    <register>
+      <name>PORT</name>
+      <addressOffset>0x05</addressOffset>
+      <size>8</size>
+      <fields>
+        <field>
+          <name>PB5</name>
+          <bitOffset>5</bitOffset>
+          <bitWidth>1</bitWidth>
+        </field>
+      </fields>
+    </register>
+  </peripheral>
+</device>

@@ -35,10 +35,13 @@ impl SourceMap {
         &self.files
     }
 
-    /// 1-based line and column of `span.start`.
-    pub fn line_col(&self, span: Span) -> (usize, usize) {
-        let src = &self.get(span.file).src;
-        let start = span.start as usize;
+    /// 1-based line and column of a byte offset.
+    pub fn offset_line_col(&self, file: u32, offset: usize) -> (usize, usize) {
+        if (file as usize) >= self.files.len() {
+            return (1, 1);
+        }
+        let src = &self.get(file).src;
+        let start = offset.min(src.len());
         let mut line = 1usize;
         let mut col = 1usize;
         for (i, ch) in src.char_indices() {
@@ -53,6 +56,19 @@ impl SourceMap {
             }
         }
         (line, col)
+    }
+
+    /// 1-based line and column of `span.start`.
+    pub fn line_col(&self, span: Span) -> (usize, usize) {
+        self.offset_line_col(span.file, span.start as usize)
+    }
+
+    /// Inclusive-start exclusive-end line/col (1-based) for a span.
+    pub fn span_range(&self, span: Span) -> ((usize, usize), (usize, usize)) {
+        (
+            self.offset_line_col(span.file, span.start as usize),
+            self.offset_line_col(span.file, span.end as usize),
+        )
     }
 
     pub fn line_text(&self, span: Span) -> (usize, String) {

@@ -28,7 +28,9 @@ fn main() -> ExitCode {
 
 fn run(args: &[String]) -> Result<(), ExitCode> {
     let (cmd, rest) = match args.first().map(String::as_str) {
-        Some("compile") | Some("check") | Some("tokens") | Some("ast") => {
+        Some("compile") | Some("check") | Some("tokens") | Some("ast") | Some("svd")
+        | Some("report") | Some("ide") | Some("app") | Some("lsp") | Some("boards")
+        | Some("ports") | Some("home") => {
             (args[0].as_str(), &args[1..])
         }
         Some(_) => ("compile", args),
@@ -37,6 +39,68 @@ fn run(args: &[String]) -> Result<(), ExitCode> {
             return Ok(());
         }
     };
+
+    if cmd == "svd" {
+        return run_svd(rest);
+    }
+    if cmd == "ide" {
+        return run_ide(rest);
+    }
+    if cmd == "app" {
+        return run_app();
+    }
+    if cmd == "lsp" {
+        return voltc::lsp::run().map_err(|e| {
+            eprintln!("error: {e}");
+            ExitCode::from(1)
+        });
+    }
+    if cmd == "home" {
+        match voltc::workspace::ensure() {
+            Ok(ws) => {
+                println!("home      {}", ws.root.display());
+                println!("projects  {}", ws.projects.display());
+                println!("addons    {}", ws.addons.display());
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return Err(ExitCode::from(1));
+            }
+        }
+    }
+    if cmd == "boards" {
+        let q = rest.first().map(String::as_str).unwrap_or("").trim();
+        if q.is_empty() {
+            println!("name           display                      fqbn");
+            println!("{}", voltc::board::known_names());
+            return Ok(());
+        }
+        let hits = voltc::board::search_boards(q);
+        if hits.is_empty() {
+            eprintln!("error: {}", voltc::board::unknown_board_message(q));
+            return Err(ExitCode::from(2));
+        }
+        println!("name           display                      fqbn");
+        for b in hits {
+            let fqbn = b.fqbn.unwrap_or("-");
+            println!("  {:<14} {:<28} {}", b.name, b.display, fqbn);
+        }
+        return Ok(());
+    }
+    if cmd == "ports" {
+        let ports = voltc::ports::list_serial_ports();
+        if ports.is_empty() {
+            println!(
+                "no serial ports (plug in a board; on macOS look for /dev/cu.usbmodem*)"
+            );
+        } else {
+            for p in ports {
+                println!("{:<28} {}", p.address, p.label);
+            }
+        }
+        return Ok(());
+    }
 
     let parsed = parse_args(rest).map_err(|e| {
         eprintln!("error: {e}");
@@ -53,6 +117,7 @@ fn run(args: &[String]) -> Result<(), ExitCode> {
         "tokens" => dump_tokens(path),
         "ast" => dump_ast(path),
         "check" => check(path, &parsed),
+        "report" => compile_report(path, &parsed),
         _ => compile(path, &parsed),
     }
 }
@@ -83,9 +148,12 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 i += 1;
                 out.output = Some(PathBuf::from(args.get(i).ok_or("missing argument for -o")?));
             }
-            "--target" => {
+            "--target" | "--board" => {
                 i += 1;
-                out.target = args.get(i).ok_or("missing argument for --target")?.clone();
+                out.target = args
+                    .get(i)
+                    .ok_or("missing argument for --target / --board")?
+                    .clone();
             }
             "--emit" => {
                 i += 1;
@@ -117,10 +185,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
 
 fn options_from(args: &Args) -> Result<CompileOptions, ExitCode> {
     let target = target::find_target(&args.target).cloned().ok_or_else(|| {
-        eprintln!(
-            "error: unknown target `{}` (try host, avr-atmega328p, cortex-m0)",
-            args.target
-        );
+        eprintln!("error: {}", voltc::board::unknown_board_message(&args.target));
         ExitCode::from(2)
     })?;
     Ok(CompileOptions {
@@ -129,7 +194,11 @@ fn options_from(args: &Args) -> Result<CompileOptions, ExitCode> {
             .std_path
             .clone()
             .unwrap_or_else(driver::default_std_path),
-        include_paths: args.include_paths.clone(),
+        include_paths: {
+            let mut paths = args.include_paths.clone();
+            paths.extend(voltc::workspace::addon_search_paths());
+            paths
+        },
     })
 }
 
@@ -173,6 +242,9 @@ fn compile(path: &Path, args: &Args) -> Result<(), ExitCode> {
     if args.emit == "ast" {
         return dump_ast(path);
     }
+    if args.emit == "report" {
+        return compile_report(path, args);
+    }
     let opts = options_from(args)?;
     match driver::compile_file(path, &opts) {
         Ok(result) => {
@@ -187,6 +259,116 @@ fn compile(path: &Path, args: &Args) -> Result<(), ExitCode> {
             Ok(())
         }
         Err(err) => print_compile_fail(&err),
+    }
+}
+
+fn compile_report(path: &Path, args: &Args) -> Result<(), ExitCode> {
+    let opts = options_from(args)?;
+    match driver::compile_file(path, &opts) {
+        Ok(result) => {
+            print!("{}", result.report);
+            Ok(())
+        }
+        Err(err) => print_compile_fail(&err),
+    }
+}
+
+fn run_svd(args: &[String]) -> Result<(), ExitCode> {
+    let parsed = parse_args(args).map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(2)
+    })?;
+    let Some(input) = parsed.input.clone() else {
+        eprintln!("error: missing SVD file");
+        return Err(ExitCode::from(2));
+    };
+    let xml = std::fs::read_to_string(&input).map_err(|e| {
+        eprintln!("error: cannot read {input}: {e}");
+        ExitCode::from(1)
+    })?;
+    match voltc::svd::svd_to_volt(&xml) {
+        Ok(volt) => {
+            if let Some(out) = parsed.output {
+                if let Err(e) = std::fs::write(&out, &volt) {
+                    eprintln!("error: cannot write {}: {e}", out.display());
+                    return Err(ExitCode::from(1));
+                }
+            } else {
+                print!("{volt}");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            Err(ExitCode::from(1))
+        }
+    }
+}
+
+fn run_ide(args: &[String]) -> Result<(), ExitCode> {
+    let mut port: u16 = 8741;
+    let mut host = "127.0.0.1".to_string();
+    let mut open = true;
+    let mut window = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" => {
+                i += 1;
+                let p = args.get(i).ok_or_else(|| {
+                    eprintln!("error: missing argument for --port");
+                    ExitCode::from(2)
+                })?;
+                port = p.parse().map_err(|_| {
+                    eprintln!("error: invalid --port");
+                    ExitCode::from(2)
+                })?;
+            }
+            "--bind" => {
+                i += 1;
+                host = args
+                    .get(i)
+                    .ok_or_else(|| {
+                        eprintln!("error: missing argument for --bind");
+                        ExitCode::from(2)
+                    })?
+                    .clone();
+            }
+            "--no-open" => open = false,
+            "--open" => open = true,
+            "--window" | "--app" => window = true,
+            "--browser" => window = false,
+            s => {
+                eprintln!("error: unknown option `{s}`");
+                return Err(ExitCode::from(2));
+            }
+        }
+        i += 1;
+    }
+    if window {
+        return run_app();
+    }
+    let bind = format!("{host}:{port}");
+    voltc::ide_server::run(&bind, open).map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(1)
+    })
+}
+
+fn run_app() -> Result<(), ExitCode> {
+    #[cfg(feature = "app")]
+    {
+        return voltc::app::run().map_err(|e| {
+            eprintln!("error: {e}");
+            ExitCode::from(1)
+        });
+    }
+    #[cfg(not(feature = "app"))]
+    {
+        eprintln!(
+            "error: native Volt app is not in this binary\n  cargo run --features app --bin volt\n  ./scripts/package-macos.sh\n  .\\scripts\\package-windows.cmd"
+        );
+        Err(ExitCode::from(2))
     }
 }
 
@@ -218,17 +400,30 @@ fn print_help() {
 voltc {VERSION} — Volt compiler (C++-like language for microcontrollers)
 
 Usage:
-  voltc compile <file.volt> [-o out.c] [--target host]
+  voltc compile <file.volt> [-o out.c] [--board uno]
   voltc check   <file.volt>
   voltc ast     <file.volt>
   voltc tokens  <file.volt>
+  voltc report  <file.volt>
+  voltc svd     <file.svd> [-o out.volt]
+  voltc boards  [query]
+  voltc home
+  voltc ports
+  voltc ide     [--port 8741] [--no-open] [--window]
+  voltc app
+  voltc lsp
 
 Options:
-  -o, --output <path>     Write generated C to a file (default: stdout)
-  --target <name>         host | avr-atmega328p | cortex-m0
-  --emit <kind>           c | ast | tokens
+  -o, --output <path>     Write generated C (or Volt, for svd) to a file
+  --board, --target <id>  Arduino FQBN or id (`voltc boards [query]`)
+  --emit <kind>           c | ast | tokens | report
   -I <dir>                Extra module search path
   --std-path <dir>        Standard library root (default: ./std)
+  --port <n>              IDE bind port (default 8741)
+  --bind <addr>           IDE bind host (default 127.0.0.1)
+  --no-open               Do not open a browser for `voltc ide`
+  --window, --app         Open the native Volt app window
+  --browser               Force the browser UI (default without --features app)
   -h, --help              Show this help
   -V, --version           Show version
 
