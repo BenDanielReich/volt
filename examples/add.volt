@@ -1,9 +1,9 @@
-module add;
+module add
 
 int add(int a, int b) {
-    return a + b;
+    return a + b
 }
 
 int main() {
-    return add(40, 2);
+    return add(40, 2)
 }

@@ -26,6 +26,15 @@ impl Diagnostic {
         }
     }
 
+    pub fn warning(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            level: Level::Warning,
+            message: message.into(),
+            span,
+            notes: Vec::new(),
+        }
+    }
+
     pub fn note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(note.into());
         self

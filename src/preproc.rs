@@ -1,7 +1,8 @@
-//! C-style `#define` before parse.
+//! C-style `#define` and `#change` before parse.
 //!
 //! Object-like: `#define LED 13`
 //! Function-like (no space before `(`): `#define MAX(a, b) ((a) > (b) ? (a) : (b))`
+//! Short names: `#change enum to em` then write `em Level { Low = 0, High = 1 }`
 
 use std::collections::HashMap;
 
@@ -15,8 +16,15 @@ struct Macro {
     body: Vec<Token>,
 }
 
+#[derive(Clone)]
+struct Change {
+    kind: TokenKind,
+    lexeme: String,
+}
+
 pub fn preprocess(src: &str, tokens: Vec<Token>) -> (Vec<Token>, Vec<Diagnostic>) {
     let mut macros: HashMap<String, Macro> = HashMap::new();
+    let mut changes: HashMap<String, Change> = HashMap::new();
     let mut diagnostics = Vec::new();
     let mut out = Vec::new();
     let mut i = 0;
@@ -28,29 +36,47 @@ pub fn preprocess(src: &str, tokens: Vec<Token>) -> (Vec<Token>, Vec<Diagnostic>
             break;
         }
 
-        if tok.kind == TokenKind::Hash
-            && at_line_start(src, tok.span)
-            && matches!(tokens.get(i + 1), Some(t) if t.kind == TokenKind::Ident && t.lexeme == "define")
-        {
-            i += 2; // `#` `define`
-            match parse_define(src, &tokens, &mut i) {
-                Ok((name, mac)) => {
-                    macros.insert(name, mac);
-                }
-                Err(diag) => {
-                    diagnostics.push(diag);
-                    while i < tokens.len()
-                        && tokens[i].kind != TokenKind::Eof
-                        && !at_line_start(src, tokens[i].span)
-                    {
-                        i += 1;
+        if tok.kind == TokenKind::Hash && at_line_start(src, tok.span) {
+            if matches!(tokens.get(i + 1), Some(t) if t.kind == TokenKind::Ident && t.lexeme == "define")
+            {
+                i += 2; // `#` `define`
+                match parse_define(src, &tokens, &mut i) {
+                    Ok((name, mac)) => {
+                        macros.insert(name, mac);
+                    }
+                    Err(diag) => {
+                        diagnostics.push(diag);
+                        skip_rest_of_line(src, &tokens, &mut i);
                     }
                 }
+                continue;
             }
-            continue;
+            if matches!(tokens.get(i + 1), Some(t) if t.kind == TokenKind::Ident && t.lexeme == "change")
+            {
+                i += 2; // `#` `change`
+                match parse_change(&tokens, &mut i) {
+                    Ok((short, change)) => {
+                        changes.insert(short, change);
+                        skip_rest_of_line(src, &tokens, &mut i);
+                    }
+                    Err(diag) => {
+                        diagnostics.push(diag);
+                        skip_rest_of_line(src, &tokens, &mut i);
+                    }
+                }
+                continue;
+            }
         }
 
-        expand_into(&tokens, &mut i, &macros, &mut out, &mut diagnostics, 0);
+        expand_into(
+            &tokens,
+            &mut i,
+            &macros,
+            &changes,
+            &mut out,
+            &mut diagnostics,
+            0,
+        );
     }
 
     (out, diagnostics)
@@ -119,15 +145,74 @@ fn parse_define(src: &str, tokens: &[Token], i: &mut usize) -> Result<(String, M
     Ok((name, Macro { params, body }))
 }
 
+fn parse_change(tokens: &[Token], i: &mut usize) -> Result<(String, Change), Diagnostic> {
+    let from = tokens.get(*i).ok_or_else(|| {
+        Diagnostic::error(
+            "expected a name after `#change` — try `#change enum to em`",
+            Span::dummy(),
+        )
+    })?;
+    if !is_word(from) {
+        return Err(Diagnostic::error(
+            "expected a name after `#change` — try `#change enum to em`",
+            from.span,
+        ));
+    }
+    let from_span = from.span;
+    let change = Change {
+        kind: from.kind,
+        lexeme: from.lexeme.clone(),
+    };
+    *i += 1;
+
+    let arrow = tokens.get(*i).ok_or_else(|| {
+        Diagnostic::error("expected `to` — write `#change enum to em`", from_span)
+    })?;
+    if arrow.kind != TokenKind::Ident || arrow.lexeme != "to" {
+        return Err(Diagnostic::error(
+            "expected `to` — write `#change enum to em`",
+            arrow.span,
+        ));
+    }
+    *i += 1;
+
+    let short = tokens.get(*i).ok_or_else(|| {
+        Diagnostic::error(
+            "expected the short name after `to` — try `#change enum to em`",
+            Span::dummy(),
+        )
+    })?;
+    if short.kind != TokenKind::Ident {
+        return Err(Diagnostic::error(
+            "expected the short name after `to` — try `#change enum to em`",
+            short.span,
+        ));
+    }
+    if TokenKind::keyword(&short.lexeme).is_some() {
+        return Err(Diagnostic::error(
+            format!(
+                "short name `{}` is already a Volt word — pick something else",
+                short.lexeme
+            ),
+            short.span,
+        ));
+    }
+    let short_name = short.lexeme.clone();
+    *i += 1;
+    Ok((short_name, change))
+}
+
 fn expand_into(
     tokens: &[Token],
     i: &mut usize,
     macros: &HashMap<String, Macro>,
+    changes: &HashMap<String, Change>,
     out: &mut Vec<Token>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
-    let tok = tokens[*i].clone();
+    let mut tok = tokens[*i].clone();
+    apply_change(&mut tok, changes);
     if tok.kind == TokenKind::Ident {
         if let Some(mac) = macros.get(&tok.lexeme) {
             if depth > 64 {
@@ -160,6 +245,7 @@ fn expand_into(
                             replay(
                                 &substituted,
                                 macros,
+                                changes,
                                 out,
                                 diagnostics,
                                 depth + 1,
@@ -180,6 +266,7 @@ fn expand_into(
                 replay(
                     &substituted,
                     macros,
+                    changes,
                     out,
                     diagnostics,
                     depth + 1,
@@ -196,6 +283,7 @@ fn expand_into(
 fn replay(
     body: &[Token],
     macros: &HashMap<String, Macro>,
+    changes: &HashMap<String, Change>,
     out: &mut Vec<Token>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
@@ -205,7 +293,30 @@ fn replay(
     let mut hidden = macros.clone();
     hidden.remove(hide);
     while j < body.len() {
-        expand_into(body, &mut j, &hidden, out, diagnostics, depth);
+        expand_into(body, &mut j, &hidden, changes, out, diagnostics, depth);
+    }
+}
+
+fn apply_change(tok: &mut Token, changes: &HashMap<String, Change>) {
+    if !is_word(tok) {
+        return;
+    }
+    if let Some(change) = changes.get(&tok.lexeme) {
+        tok.kind = change.kind;
+        tok.lexeme = change.lexeme.clone();
+    }
+}
+
+fn is_word(tok: &Token) -> bool {
+    tok.kind == TokenKind::Ident || TokenKind::keyword(&tok.lexeme).is_some()
+}
+
+fn skip_rest_of_line(src: &str, tokens: &[Token], i: &mut usize) {
+    while *i < tokens.len()
+        && tokens[*i].kind != TokenKind::Eof
+        && !at_line_start(src, tokens[*i].span)
+    {
+        *i += 1;
     }
 }
 
@@ -325,5 +436,38 @@ mod tests {
     fn function_like_define() {
         let lexemes = expand("#define MAX(a, b) a\nMAX(1, 2);");
         assert_eq!(lexemes, vec!["1", ";"]);
+    }
+
+    fn expand_kinds(src: &str) -> Vec<(TokenKind, String)> {
+        let (toks, lex_diags) = Lexer::new(0, src).tokenize();
+        assert!(lex_diags.is_empty(), "{lex_diags:?}");
+        let (toks, pre_diags) = preprocess(src, toks);
+        assert!(pre_diags.is_empty(), "{pre_diags:?}");
+        toks.into_iter()
+            .filter(|t| t.kind != TokenKind::Eof)
+            .map(|t| (t.kind, t.lexeme))
+            .collect()
+    }
+
+    #[test]
+    fn change_rewrites_enum_keyword() {
+        let kinds = expand_kinds("#change enum to em\nem Foo { A = 1 }");
+        assert_eq!(kinds[0].0, TokenKind::Enum);
+        assert_eq!(kinds[0].1, "enum");
+        assert!(!kinds.iter().any(|(_, lex)| lex == "em"));
+        assert!(!kinds.iter().any(|(_, lex)| lex == "change"));
+    }
+
+    #[test]
+    fn change_rewrites_ident() {
+        let kinds = expand_kinds("#change pin_mode to pm\npm(13, 1)");
+        assert_eq!(kinds[0], (TokenKind::Ident, "pin_mode".into()));
+        assert!(!kinds.iter().any(|(_, lex)| lex == "pm"));
+    }
+
+    #[test]
+    fn change_then_define_expands() {
+        let lexemes = expand("#define LED 13\n#change LED to L\nL");
+        assert_eq!(lexemes, vec!["13"]);
     }
 }

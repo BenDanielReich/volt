@@ -20,6 +20,7 @@ pub struct CompileOptions {
 #[derive(Debug)]
 pub struct CompileResult {
     pub c_source: String,
+    pub report: String,
     pub program: Program,
     pub sources: SourceMap,
     pub diagnostics: Vec<Diagnostic>,
@@ -87,7 +88,7 @@ fn compile_with_loader(
         });
     }
 
-    let mut checker = Checker::new();
+    let mut checker = Checker::with_target(opts.target);
     let mut program = checker.check_modules(&modules);
     program.c_includes = dedup_c_includes(c_includes);
     diagnostics.extend(checker.diagnostics);
@@ -102,9 +103,11 @@ fn compile_with_loader(
         });
     }
 
+    let report = crate::report::render(&program, &opts.target);
     let c_source = codegen::emit_c(&program, &opts.target);
     Ok(CompileResult {
         c_source,
+        report,
         program,
         sources,
         diagnostics,
@@ -236,6 +239,13 @@ fn resolve_include(
             if candidate.is_file() {
                 return Some(candidate);
             }
+            // addons/servo/servo.volt for `#include <servo>`
+            if let Some(stem) = Path::new(name).file_stem() {
+                let nested = dir.join(stem).join(format!("{}.volt", stem.to_string_lossy()));
+                if nested.is_file() {
+                    return Some(nested);
+                }
+            }
         }
     }
     None
@@ -274,11 +284,20 @@ pub fn default_std_path() -> PathBuf {
             if next_to_bin.is_dir() {
                 return next_to_bin;
             }
-            // cargo run: target/debug/voltc → workspace std/
-            if let Some(root) = dir.parent().and_then(|p| p.parent()) {
-                let workspace = root.join("std");
-                if workspace.is_dir() {
-                    return workspace;
+            let bundled = dir.join("../Resources/std");
+            if bundled.is_dir() {
+                return bundled;
+            }
+            // cargo run on Windows may be target\debug or target\<triple>\debug
+            let mut walk = dir.to_path_buf();
+            for _ in 0..8 {
+                let Some(parent) = walk.parent() else {
+                    break;
+                };
+                walk = parent.to_path_buf();
+                let candidate = walk.join("std");
+                if candidate.is_dir() && walk.join("Cargo.toml").is_file() {
+                    return candidate;
                 }
             }
         }

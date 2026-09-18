@@ -1,0 +1,47 @@
+{
+  "scopeName": "source.volt",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#preproc" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.volt", "match": "//.*$" },
+        {
+          "name": "comment.block.volt",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "preproc": {
+      "patterns": [
+        { "name": "meta.preprocessor.volt", "match": "#(include|define|change)\\b.*" },
+        { "name": "storage.modifier.attribute.volt", "match": "#\\[[^\\]]*\\]" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        { "name": "string.quoted.double.volt", "match": "\"([^\"\\\\]|\\\\.)*\"" },
+        { "name": "string.quoted.single.volt", "match": "'([^'\\\\]|\\\\.)'" }
+      ]
+    },
+    "numbers": {
+      "match": "\\b(0x[0-9a-fA-F_]+|0b[01_]+|\\d[\\d_]*(\\.\\d[\\d_]*)?[a-zA-Z0-9_]*)\\b",
+      "name": "constant.numeric.volt"
+    },
+    "keywords": {
+      "name": "keyword.control.volt",
+      "match": "\\b(module|use|struct|enum|const|static|reg|extern|if|else|while|for|return|break|continue|as|true|false|function|match|impl|trait|type|export|internal|comptime|async|await|when|asm|mut|self|pin|peripheral|loop)\\b"
+    },
+    "types": {
+      "name": "storage.type.volt",
+      "match": "\\b(void|int|bool|u8|u16|u32|u64|i8|i16|i32|i64|usize|isize|f32|f64|u\\d+|i\\d+)\\b"
+    }
+  }
+}

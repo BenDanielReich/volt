@@ -1,0 +1,44 @@
+{
+  "name": "volt",
+  "displayName": "Volt",
+  "description": "Volt language — syntax highlighting and language server for microcontrollers",
+  "version": "0.1.0",
+  "publisher": "volt",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:volt"],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "volt",
+        "aliases": ["Volt", "volt"],
+        "extensions": [".volt"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "volt",
+        "scopeName": "source.volt",
+        "path": "./syntaxes/volt.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "volt.openIde",
+        "title": "Volt: Open IDE"
+      }
+    ],
+    "configuration": {
+      "title": "Volt",
+      "properties": {
+        "volt.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to voltc or voltc.exe. Empty = search PATH and target\\debug."
+        }
+      }
+    }
+  }
+}

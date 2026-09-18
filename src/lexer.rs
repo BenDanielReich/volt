@@ -54,21 +54,14 @@ impl<'src> Lexer<'src> {
             '@' => self.bump_simple(TokenKind::At, start),
             '~' => self.bump_simple(TokenKind::Tilde, start),
             '#' => self.bump_simple(TokenKind::Hash, start),
-            '.' => self.bump_simple(TokenKind::Dot, start),
-            '+' => self.compound2(
-                start,
-                '+',
-                TokenKind::PlusPlus,
-                '=',
-                TokenKind::PlusEq,
-                TokenKind::Plus,
-            ),
+            '.' => self.dot(start),
+            '+' => self.plus(start),
             '-' => self.minus(start),
-            '*' => self.compound1(start, '=', TokenKind::StarEq, TokenKind::Star),
+            '*' => self.star(start),
             '%' => self.compound1(start, '=', TokenKind::PercentEq, TokenKind::Percent),
             '^' => self.compound1(start, '=', TokenKind::CaretEq, TokenKind::Caret),
             '!' => self.compound1(start, '=', TokenKind::NotEq, TokenKind::Bang),
-            '=' => self.compound1(start, '=', TokenKind::EqEq, TokenKind::Eq),
+            '=' => self.eq(start),
             '&' => self.amp(start),
             '|' => self.pipe(start),
             '<' => self.lt(start),
@@ -198,6 +191,29 @@ impl<'src> Lexer<'src> {
         self.mk(TokenKind::Char, start, &self.src[start..self.pos])
     }
 
+    fn plus(&mut self, start: usize) -> Token {
+        self.bump();
+        match self.peek() {
+            Some('+') => {
+                self.bump();
+                self.mk(TokenKind::PlusPlus, start, "++")
+            }
+            Some('=') => {
+                self.bump();
+                self.mk(TokenKind::PlusEq, start, "+=")
+            }
+            Some('%') => {
+                self.bump();
+                self.mk(TokenKind::PlusPercent, start, "+%")
+            }
+            Some('|') => {
+                self.bump();
+                self.mk(TokenKind::PlusPipe, start, "+|")
+            }
+            _ => self.mk(TokenKind::Plus, start, "+"),
+        }
+    }
+
     fn minus(&mut self, start: usize) -> Token {
         self.bump();
         match self.peek() {
@@ -213,7 +229,59 @@ impl<'src> Lexer<'src> {
                 self.bump();
                 self.mk(TokenKind::Arrow, start, "->")
             }
+            Some('%') => {
+                self.bump();
+                self.mk(TokenKind::MinusPercent, start, "-%")
+            }
+            Some('|') => {
+                self.bump();
+                self.mk(TokenKind::MinusPipe, start, "-|")
+            }
             _ => self.mk(TokenKind::Minus, start, "-"),
+        }
+    }
+
+    fn star(&mut self, start: usize) -> Token {
+        self.bump();
+        match self.peek() {
+            Some('=') => {
+                self.bump();
+                self.mk(TokenKind::StarEq, start, "*=")
+            }
+            Some('%') => {
+                self.bump();
+                self.mk(TokenKind::StarPercent, start, "*%")
+            }
+            Some('|') => {
+                self.bump();
+                self.mk(TokenKind::StarPipe, start, "*|")
+            }
+            _ => self.mk(TokenKind::Star, start, "*"),
+        }
+    }
+
+    fn eq(&mut self, start: usize) -> Token {
+        self.bump();
+        match self.peek() {
+            Some('=') => {
+                self.bump();
+                self.mk(TokenKind::EqEq, start, "==")
+            }
+            Some('>') => {
+                self.bump();
+                self.mk(TokenKind::FatArrow, start, "=>")
+            }
+            _ => self.mk(TokenKind::Eq, start, "="),
+        }
+    }
+
+    fn dot(&mut self, start: usize) -> Token {
+        self.bump();
+        if self.peek() == Some('.') {
+            self.bump();
+            self.mk(TokenKind::DotDot, start, "..")
+        } else {
+            self.mk(TokenKind::Dot, start, ".")
         }
     }
 
@@ -292,27 +360,6 @@ impl<'src> Lexer<'src> {
         if self.peek() == Some(next) {
             self.bump();
             self.mk(two, start, &self.src[start..self.pos])
-        } else {
-            self.mk(one, start, &self.src[start..self.pos])
-        }
-    }
-
-    fn compound2(
-        &mut self,
-        start: usize,
-        a: char,
-        aa: TokenKind,
-        b: char,
-        ab: TokenKind,
-        one: TokenKind,
-    ) -> Token {
-        self.bump();
-        if self.peek() == Some(a) {
-            self.bump();
-            self.mk(aa, start, &self.src[start..self.pos])
-        } else if self.peek() == Some(b) {
-            self.bump();
-            self.mk(ab, start, &self.src[start..self.pos])
         } else {
             self.mk(one, start, &self.src[start..self.pos])
         }
@@ -457,6 +504,21 @@ mod tests {
     #[test]
     fn comments_are_skipped() {
         let k = kinds("u8 /* block */ x // line\n = 1");
+        assert_eq!(
+            k,
+            vec![
+                TokenKind::U8,
+                TokenKind::Ident,
+                TokenKind::Eq,
+                TokenKind::Integer,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn crlf_is_whitespace() {
+        let k = kinds("u8\r\nx\r\n=\r\n1");
         assert_eq!(
             k,
             vec![

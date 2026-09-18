@@ -30,7 +30,7 @@ impl Parser {
                 ident.span = ident.span.merge(seg.span);
             }
             name = Some(ident);
-            self.expect(TokenKind::Semicolon, "`;` after module name");
+            self.eat_semi();
         }
         let mut items = Vec::new();
         while !self.at(TokenKind::Eof) {
@@ -79,9 +79,28 @@ impl Parser {
         if self.at(TokenKind::Reg) {
             return self.parse_reg().map(Item::Reg);
         }
+        if self.at(TokenKind::Type) {
+            return self.parse_type_alias().map(Item::TypeAlias);
+        }
+        if self.at(TokenKind::Impl) {
+            return self.parse_impl().map(Item::Impl);
+        }
+        if self.at(TokenKind::Trait) {
+            return self.parse_trait().map(Item::Trait);
+        }
+        if self.at(TokenKind::Pin) {
+            return self.parse_pin().map(Item::Pin);
+        }
+        if self.at(TokenKind::Peripheral) {
+            return self.parse_peripheral().map(Item::Peripheral);
+        }
 
+        let is_export = self.eat(TokenKind::Export);
+        let is_internal = self.eat(TokenKind::Internal);
+        let is_comptime = self.eat(TokenKind::Comptime);
+        let is_async = self.eat(TokenKind::Async);
         let is_extern = self.eat(TokenKind::Extern);
-        let is_static = self.eat(TokenKind::Static);
+        let _is_static = self.eat(TokenKind::Static);
 
         let start = self.peek().span;
         if self.at(TokenKind::Function) {
@@ -94,13 +113,17 @@ impl Parser {
             let body = if self.at(TokenKind::LBrace) {
                 Some(self.parse_block())
             } else {
-                self.expect(TokenKind::Semicolon, "`;` after function prototype");
+                self.eat_semi();
                 None
             };
             let span = start.merge(self.prev_span());
             return Some(Item::Fn(FnItem {
                 attrs,
                 is_extern,
+                is_export,
+                is_internal,
+                is_comptime,
+                is_async,
                 return_ty: Type::void(fn_span),
                 name,
                 params,
@@ -116,13 +139,17 @@ impl Parser {
             let body = if self.at(TokenKind::LBrace) {
                 Some(self.parse_block())
             } else {
-                self.expect(TokenKind::Semicolon, "`;` after function prototype");
+                self.eat_semi();
                 None
             };
             let span = start.merge(self.prev_span());
             return Some(Item::Fn(FnItem {
                 attrs,
                 is_extern,
+                is_export,
+                is_internal,
+                is_comptime,
+                is_async,
                 return_ty: ty,
                 name,
                 params,
@@ -131,24 +158,19 @@ impl Parser {
             }));
         }
 
-        if is_static || is_extern || self.at(TokenKind::Eq) || self.at(TokenKind::Semicolon) {
-            let value = if self.eat(TokenKind::Eq) {
-                Some(self.parse_expr())
-            } else {
-                None
-            };
-            self.expect(TokenKind::Semicolon, "`;` after global");
-            return Some(Item::Static(StaticItem {
-                is_extern,
-                ty,
-                name,
-                value,
-                span: start.merge(self.prev_span()),
-            }));
-        }
-
-        self.error_here("expected `(`, `=`, or `;` after item name");
-        None
+        let value = if self.eat(TokenKind::Eq) {
+            Some(self.parse_expr())
+        } else {
+            None
+        };
+        self.eat_semi();
+        Some(Item::Static(StaticItem {
+            is_extern,
+            ty,
+            name,
+            value,
+            span: start.merge(self.prev_span()),
+        }))
     }
 
     fn parse_use(&mut self) -> Option<UseItem> {
@@ -158,7 +180,7 @@ impl Parser {
         while self.eat(TokenKind::Dot) {
             path.push(self.expect_ident("module path segment"));
         }
-        self.expect(TokenKind::Semicolon, "`;` after use");
+        self.eat_semi();
         Some(UseItem {
             path,
             span: start.merge(self.prev_span()),
@@ -205,7 +227,8 @@ impl Parser {
                 break;
             };
             let fname = self.expect_ident("field name");
-            self.expect(TokenKind::Semicolon, "`;` after field");
+            self.eat_semi();
+            self.eat(TokenKind::Comma);
             fields.push(Field { ty, name: fname });
         }
         self.expect(TokenKind::RBrace, "`}` after struct fields");
@@ -219,11 +242,11 @@ impl Parser {
     fn parse_enum(&mut self) -> Option<EnumItem> {
         let start = self.peek().span;
         self.bump(); // enum
-        let name = self.expect_ident("enum name");
-        self.expect(TokenKind::LBrace, "`{` after enum name");
+        let name = self.expect_ident("name for this list of choices");
+        self.expect(TokenKind::LBrace, "`{` after that name");
         let mut variants = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-            let vname = self.expect_ident("variant name");
+            let vname = self.expect_ident("choice name");
             let value = if self.eat(TokenKind::Eq) {
                 Some(self.parse_expr())
             } else {
@@ -234,7 +257,7 @@ impl Parser {
                 break;
             }
         }
-        self.expect(TokenKind::RBrace, "`}` after enum variants");
+        self.expect(TokenKind::RBrace, "`}` after the list of choices");
         Some(EnumItem {
             name,
             variants,
@@ -249,7 +272,7 @@ impl Parser {
         let name = self.expect_ident("const name");
         self.expect(TokenKind::Eq, "`=` after const name");
         let value = self.parse_expr();
-        self.expect(TokenKind::Semicolon, "`;` after const");
+        self.eat_semi();
         Some(ConstItem {
             ty,
             name,
@@ -265,11 +288,139 @@ impl Parser {
         let name = self.expect_ident("register name");
         self.expect(TokenKind::At, "`@` and an address after register name");
         let address = self.parse_expr();
-        self.expect(TokenKind::Semicolon, "`;` after register");
+        let bits = if self.at(TokenKind::LBrace) {
+            self.parse_bitfields()
+        } else {
+            self.eat_semi();
+            Vec::new()
+        };
         Some(RegItem {
             ty,
             name,
             address,
+            bits,
+            span: start.merge(self.prev_span()),
+        })
+    }
+
+    fn parse_bitfields(&mut self) -> Vec<BitField> {
+        self.expect(TokenKind::LBrace, "`{` after register address");
+        let mut bits = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let start = self.peek().span;
+            let name = self.expect_ident("bitfield name");
+            self.expect(TokenKind::Colon, "`:` after bitfield name");
+            let start_bit = self.parse_expr();
+            let width = if self.eat(TokenKind::DotDot) {
+                Some(self.parse_expr())
+            } else {
+                None
+            };
+            self.eat(TokenKind::Comma);
+            bits.push(BitField {
+                span: start.merge(self.prev_span()),
+                name,
+                start: start_bit,
+                width,
+            });
+        }
+        self.expect(TokenKind::RBrace, "`}` after bitfields");
+        bits
+    }
+
+    fn parse_type_alias(&mut self) -> Option<TypeAliasItem> {
+        let start = self.bump().span;
+        let name = self.expect_ident("type name");
+        self.expect(TokenKind::Eq, "`=` after type name");
+        let ty = self.parse_type()?;
+        self.eat_semi();
+        Some(TypeAliasItem {
+            name,
+            ty,
+            span: start.merge(self.prev_span()),
+        })
+    }
+
+    fn parse_impl(&mut self) -> Option<ImplItem> {
+        let start = self.bump().span;
+        let first = self.parse_type()?;
+        let (trait_name, ty) = if self.eat(TokenKind::For) {
+            let ty = self.parse_type()?;
+            let trait_name = match first.kind {
+                TypeKind::Named(id) => Some(id),
+                _ => {
+                    self.error_here("trait name must be an identifier");
+                    None
+                }
+            };
+            (trait_name, ty)
+        } else {
+            (None, first)
+        };
+        self.expect(TokenKind::LBrace, "`{` after impl");
+        let mut methods = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            if let Some(Item::Fn(f)) = self.parse_item() {
+                methods.push(f);
+            } else {
+                self.error_here("expected a method in impl");
+                self.sync_item();
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "`}` after impl");
+        Some(ImplItem {
+            trait_name,
+            ty,
+            methods,
+            span: start.merge(self.prev_span()),
+        })
+    }
+
+    fn parse_trait(&mut self) -> Option<TraitItem> {
+        let start = self.bump().span;
+        let name = self.expect_ident("trait name");
+        self.expect(TokenKind::LBrace, "`{` after trait name");
+        let mut methods = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            if let Some(Item::Fn(f)) = self.parse_item() {
+                methods.push(f);
+            } else {
+                self.error_here("expected a method in trait");
+                self.sync_item();
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "`}` after trait");
+        Some(TraitItem {
+            name,
+            methods,
+            span: start.merge(self.prev_span()),
+        })
+    }
+
+    fn parse_pin(&mut self) -> Option<PinItem> {
+        let start = self.bump().span;
+        let name = self.expect_ident("pin name");
+        self.expect(TokenKind::Eq, "`=` after pin name");
+        let reg = self.expect_ident("register name");
+        self.expect(TokenKind::Dot, "`.` after register in pin");
+        let bit = self.expect_ident("bitfield name");
+        self.eat_semi();
+        Some(PinItem {
+            name,
+            reg,
+            bit,
+            span: start.merge(self.prev_span()),
+        })
+    }
+
+    fn parse_peripheral(&mut self) -> Option<PeripheralItem> {
+        let start = self.bump().span;
+        let name = self.expect_ident("peripheral name");
+        self.eat_semi();
+        Some(PeripheralItem {
+            name,
             span: start.merge(self.prev_span()),
         })
     }
@@ -319,9 +470,21 @@ impl Parser {
             return params;
         }
         loop {
-            let Some(ty) = self.parse_type() else { break };
-            let name = self.expect_ident("parameter name");
-            params.push(Param { ty, name });
+            if let Some(p) = self.parse_self_param() {
+                params.push(p);
+            } else {
+                let Some(ty) = self.parse_type() else { break };
+                let name = if self.at(TokenKind::Ident) || self.at(TokenKind::SelfKw) {
+                    self.expect_ident_or_self()
+                } else {
+                    self.expect_ident("parameter name")
+                };
+                params.push(Param {
+                    ty,
+                    name,
+                    is_self: false,
+                });
+            }
             if !self.eat(TokenKind::Comma) {
                 break;
             }
@@ -330,8 +493,62 @@ impl Parser {
         params
     }
 
+    fn parse_self_param(&mut self) -> Option<Param> {
+        let start = self.peek().span;
+        if self.at(TokenKind::SelfKw) {
+            let name = self.expect_ident_or_self();
+            return Some(Param {
+                ty: Type {
+                    kind: TypeKind::SelfTy,
+                    span: start,
+                },
+                name,
+                is_self: true,
+            });
+        }
+        if self.at(TokenKind::Amp) {
+            let pos = self.pos;
+            let diags = self.diagnostics.len();
+            self.bump();
+            let mutable = self.eat(TokenKind::Mut);
+            if self.at(TokenKind::SelfKw) {
+                let name = self.expect_ident_or_self();
+                let inner = Type {
+                    kind: TypeKind::SelfTy,
+                    span: start,
+                };
+                return Some(Param {
+                    ty: Type {
+                        kind: TypeKind::Ref {
+                            mutable,
+                            inner: Box::new(inner),
+                        },
+                        span: start.merge(self.prev_span()),
+                    },
+                    name,
+                    is_self: true,
+                });
+            }
+            self.pos = pos;
+            self.diagnostics.truncate(diags);
+        }
+        None
+    }
+
     fn parse_type(&mut self) -> Option<Type> {
         let start = self.peek().span;
+        if self.at(TokenKind::Amp) {
+            self.bump();
+            let mutable = self.eat(TokenKind::Mut);
+            let inner = self.parse_type()?;
+            return Some(Type {
+                span: start.merge(inner.span),
+                kind: TypeKind::Ref {
+                    mutable,
+                    inner: Box::new(inner),
+                },
+            });
+        }
         let mut ty = if self.at(TokenKind::Void) || self.at(TokenKind::Function) {
             let tok = self.bump();
             Type::void(tok.span)
@@ -344,9 +561,22 @@ impl Parser {
             }
         } else if self.at(TokenKind::Ident) {
             let name = self.expect_ident("type name");
+            if let Some((signed, width)) = parse_bit_type(&name.name) {
+                Type {
+                    span: name.span,
+                    kind: TypeKind::Bits { signed, width },
+                }
+            } else {
+                Type {
+                    span: name.span,
+                    kind: TypeKind::Named(name),
+                }
+            }
+        } else if self.at(TokenKind::SelfKw) {
+            let tok = self.bump();
             Type {
-                span: name.span,
-                kind: TypeKind::Named(name),
+                kind: TypeKind::SelfTy,
+                span: tok.span,
             }
         } else {
             return None;
@@ -392,24 +622,28 @@ impl Parser {
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),
             TokenKind::For => self.parse_for(),
+            TokenKind::Match => self.parse_match(),
+            TokenKind::When => self.parse_when(),
+            TokenKind::Asm => self.parse_asm(),
+            TokenKind::Await => self.parse_await_stmt(),
             TokenKind::Return => {
                 let start = self.bump().span;
-                let value = if self.at(TokenKind::Semicolon) {
-                    None
-                } else {
+                let value = if self.looks_like_expr_start() {
                     Some(self.parse_expr())
+                } else {
+                    None
                 };
-                self.expect(TokenKind::Semicolon, "`;` after return");
+                self.eat_semi();
                 Stmt::Return(value, start.merge(self.prev_span()))
             }
             TokenKind::Break => {
                 let span = self.bump().span;
-                self.expect(TokenKind::Semicolon, "`;` after break");
+                self.eat_semi();
                 Stmt::Break(span)
             }
             TokenKind::Continue => {
                 let span = self.bump().span;
-                self.expect(TokenKind::Semicolon, "`;` after continue");
+                self.eat_semi();
                 Stmt::Continue(span)
             }
             TokenKind::LBrace => Stmt::Block(self.parse_block()),
@@ -427,7 +661,7 @@ impl Parser {
                     } else {
                         None
                     };
-                    self.expect(TokenKind::Semicolon, "`;` after declaration");
+                    self.eat_semi();
                     return Stmt::Local(LocalStmt {
                         span: ty.span.merge(self.prev_span()),
                         is_const: false,
@@ -440,7 +674,7 @@ impl Parser {
                 if let Some(op) = AssignOp::from_token(self.peek().kind) {
                     self.bump();
                     let rhs = self.parse_expr();
-                    self.expect(TokenKind::Semicolon, "`;` after assignment");
+                    self.eat_semi();
                     return Stmt::Assign(AssignStmt {
                         span: expr.span.merge(self.prev_span()),
                         lhs: expr,
@@ -448,7 +682,7 @@ impl Parser {
                         rhs,
                     });
                 }
-                self.expect(TokenKind::Semicolon, "`;` after expression");
+                self.eat_semi();
                 Stmt::Expr(expr)
             }
         }
@@ -459,7 +693,7 @@ impl Parser {
         let diags = self.diagnostics.len();
         let ty = self.parse_type();
         match ty {
-            Some(ty) if self.at(TokenKind::Ident) => {
+            Some(ty) if self.at_ident_like() => {
                 let name = self.expect_ident("variable name");
                 Some((ty, name))
             }
@@ -502,7 +736,7 @@ impl Parser {
         let name = self.expect_ident("const name");
         self.expect(TokenKind::Eq, "`=` after const name");
         let init = Some(self.parse_expr());
-        self.expect(TokenKind::Semicolon, "`;` after const");
+        self.eat_semi();
         Stmt::Local(LocalStmt {
             span: start.merge(self.prev_span()),
             is_const: true,
@@ -528,18 +762,26 @@ impl Parser {
     fn parse_for(&mut self) -> Stmt {
         let start = self.bump().span;
         self.expect(TokenKind::LParen, "`(` after for");
-        let init = if self.at(TokenKind::Semicolon) {
-            self.bump();
+        let init = if self.at_for_sep() {
+            self.eat_for_sep();
+            None
+        } else if self.at(TokenKind::RParen) {
             None
         } else {
-            Some(Box::new(self.parse_stmt()))
+            let stmt = Box::new(self.parse_stmt());
+            self.eat_for_sep();
+            Some(stmt)
         };
-        let cond = if self.at(TokenKind::Semicolon) {
+        let cond = if self.at_for_sep() {
+            self.eat_for_sep();
+            None
+        } else if self.at(TokenKind::RParen) {
             None
         } else {
-            Some(self.parse_expr())
+            let expr = self.parse_expr();
+            self.eat_for_sep();
+            Some(expr)
         };
-        self.expect(TokenKind::Semicolon, "`;` after for condition");
         let step = if self.at(TokenKind::RParen) {
             None
         } else {
@@ -554,6 +796,123 @@ impl Parser {
             body,
             span: start.merge(self.prev_span()),
         })
+    }
+
+    fn parse_match(&mut self) -> Stmt {
+        let start = self.bump().span;
+        self.expect(TokenKind::LParen, "`(` after match");
+        let scrutinee = self.parse_expr();
+        self.expect(TokenKind::RParen, "`)` after match scrutinee");
+        self.expect(TokenKind::LBrace, "`{` after match");
+        let mut arms = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let pattern = self.parse_pattern();
+            self.expect(TokenKind::FatArrow, "`=>` after match pattern");
+            let body = Box::new(self.parse_stmt());
+            self.eat(TokenKind::Comma);
+            arms.push(MatchArm { pattern, body });
+        }
+        self.expect(TokenKind::RBrace, "`}` after match arms");
+        Stmt::Match(MatchStmt {
+            scrutinee,
+            arms,
+            span: start.merge(self.prev_span()),
+        })
+    }
+
+    fn parse_pattern(&mut self) -> Pattern {
+        if self.at(TokenKind::Integer) {
+            let tok = self.bump();
+            let (value, suffix) = parse_int_literal(&tok.lexeme);
+            return Pattern::Int(
+                IntLit {
+                    value,
+                    suffix,
+                    raw: tok.lexeme,
+                },
+                tok.span,
+            );
+        }
+        let first = self.expect_ident("match pattern");
+        if first.name == "_" {
+            return Pattern::Wildcard(first.span);
+        }
+        if self.eat(TokenKind::Dot) {
+            let variant = self.expect_ident("enum variant");
+            return Pattern::Enum(first, variant);
+        }
+        Pattern::Ident(first)
+    }
+
+    fn parse_when(&mut self) -> Stmt {
+        let start = self.bump().span;
+        self.expect(TokenKind::LParen, "`(` after when");
+        let cond = self.parse_expr();
+        self.expect(TokenKind::RParen, "`)` after when condition");
+        let then_branch = self.parse_block();
+        let else_branch = if self.eat(TokenKind::Else) {
+            Some(self.parse_block())
+        } else {
+            None
+        };
+        Stmt::When(WhenStmt {
+            cond,
+            then_branch,
+            else_branch,
+            taken: None,
+            span: start.merge(self.prev_span()),
+        })
+    }
+
+    fn parse_asm(&mut self) -> Stmt {
+        let start = self.bump().span;
+        self.expect(TokenKind::LParen, "`(` after asm");
+        let template = if self.at(TokenKind::String) {
+            unquote_string(&self.bump().lexeme)
+        } else {
+            self.error_here("expected asm template string");
+            String::new()
+        };
+        let mut binds = Vec::new();
+        while self.eat(TokenKind::Comma) {
+            let dir = if self.at(TokenKind::Ident) {
+                match self.peek().lexeme.as_str() {
+                    "in" => {
+                        self.bump();
+                        AsmDir::In
+                    }
+                    "out" => {
+                        self.bump();
+                        AsmDir::Out
+                    }
+                    "inout" => {
+                        self.bump();
+                        AsmDir::InOut
+                    }
+                    _ => AsmDir::In,
+                }
+            } else {
+                AsmDir::In
+            };
+            let name = self.expect_ident("asm operand name");
+            self.expect(TokenKind::Eq, "`=` after asm operand name");
+            let value = self.parse_expr();
+            binds.push(AsmBind { dir, name, value });
+        }
+        self.expect(TokenKind::RParen, "`)` after asm");
+        self.eat_semi();
+        Stmt::Asm(AsmStmt {
+            template,
+            binds,
+            span: start.merge(self.prev_span()),
+        })
+    }
+
+    fn parse_await_stmt(&mut self) -> Stmt {
+        let start = self.bump().span;
+        let expr = self.parse_expr();
+        self.eat_semi();
+        Stmt::Await(expr, start.merge(self.prev_span()))
     }
 
     fn parse_expr(&mut self) -> Expr {
@@ -605,19 +964,57 @@ impl Parser {
     }
 
     fn parse_add(&mut self) -> Expr {
-        self.parse_bin(
-            Self::parse_mul,
-            &[TokenKind::Plus, TokenKind::Minus],
-            &[BinOp::Add, BinOp::Sub],
-        )
+        let mut left = self.parse_mul();
+        loop {
+            let op = if self.eat(TokenKind::PlusPercent) {
+                BinOp::WrapAdd
+            } else if self.eat(TokenKind::MinusPercent) {
+                BinOp::WrapSub
+            } else if self.eat(TokenKind::PlusPipe) {
+                BinOp::SatAdd
+            } else if self.eat(TokenKind::MinusPipe) {
+                BinOp::SatSub
+            } else if self.eat(TokenKind::Plus) {
+                BinOp::Add
+            } else if self.eat(TokenKind::Minus) {
+                BinOp::Sub
+            } else {
+                break;
+            };
+            let right = self.parse_mul();
+            let span = left.span.merge(right.span);
+            left = Expr {
+                kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
+                span,
+            };
+        }
+        left
     }
 
     fn parse_mul(&mut self) -> Expr {
-        self.parse_bin(
-            Self::parse_as,
-            &[TokenKind::Star, TokenKind::Slash, TokenKind::Percent],
-            &[BinOp::Mul, BinOp::Div, BinOp::Rem],
-        )
+        let mut left = self.parse_as();
+        loop {
+            let op = if self.eat(TokenKind::StarPercent) {
+                BinOp::WrapMul
+            } else if self.eat(TokenKind::StarPipe) {
+                BinOp::SatMul
+            } else if self.eat(TokenKind::Star) {
+                BinOp::Mul
+            } else if self.eat(TokenKind::Slash) {
+                BinOp::Div
+            } else if self.eat(TokenKind::Percent) {
+                BinOp::Rem
+            } else {
+                break;
+            };
+            let right = self.parse_as();
+            let span = left.span.merge(right.span);
+            left = Expr {
+                kind: ExprKind::Binary(op, Box::new(left), Box::new(right)),
+                span,
+            };
+        }
+        left
     }
 
     fn parse_bin(
@@ -663,7 +1060,19 @@ impl Parser {
             TokenKind::Bang => Some(UnOp::Not),
             TokenKind::Tilde => Some(UnOp::BitNot),
             TokenKind::Star => Some(UnOp::Deref),
-            TokenKind::Amp => Some(UnOp::AddrOf),
+            TokenKind::Amp => {
+                self.bump();
+                let op = if self.eat(TokenKind::Mut) {
+                    UnOp::AddrOfMut
+                } else {
+                    UnOp::AddrOf
+                };
+                let expr = self.parse_unary();
+                return Expr {
+                    span: start.merge(expr.span),
+                    kind: ExprKind::Unary(op, Box::new(expr)),
+                };
+            }
             TokenKind::PlusPlus => Some(UnOp::PreInc),
             TokenKind::MinusMinus => Some(UnOp::PreDec),
             TokenKind::Plus => {
@@ -729,6 +1138,9 @@ impl Parser {
                     kind: ExprKind::Unary(UnOp::PostDec, Box::new(expr)),
                     span,
                 };
+            } else if self.at(TokenKind::Await) {
+                // postfix not used; await is prefix statement/expr
+                break;
             } else {
                 break;
             }
@@ -794,6 +1206,21 @@ impl Parser {
                     kind: ExprKind::Ident(name),
                 }
             }
+            TokenKind::SelfKw => {
+                let tok = self.bump();
+                Expr {
+                    span: tok.span,
+                    kind: ExprKind::Ident(Ident::new("self", tok.span)),
+                }
+            }
+            TokenKind::Await => {
+                let start = self.bump().span;
+                let inner = self.parse_expr();
+                Expr {
+                    span: start.merge(inner.span),
+                    kind: ExprKind::Await(Box::new(inner)),
+                }
+            }
             TokenKind::LParen => {
                 self.bump();
                 let inner = self.parse_expr();
@@ -832,14 +1259,45 @@ impl Parser {
         Ident::new(tok.lexeme, tok.span)
     }
 
+    fn expect_ident_or_self(&mut self) -> Ident {
+        if self.at(TokenKind::Ident) || self.at(TokenKind::SelfKw) {
+            let tok = self.bump();
+            Ident::new(tok.lexeme, tok.span)
+        } else {
+            self.error_here("expected identifier");
+            Ident::new("_", self.peek().span)
+        }
+    }
+
     fn expect_ident(&mut self, what: &str) -> Ident {
-        if self.at(TokenKind::Ident) {
+        if self.at_ident_like() {
             let tok = self.bump();
             Ident::new(tok.lexeme, tok.span)
         } else {
             self.error_here(format!("expected {what}"));
             Ident::new("_", self.peek().span)
         }
+    }
+
+    fn at_ident_like(&self) -> bool {
+        matches!(
+            self.peek().kind,
+            TokenKind::Ident
+                | TokenKind::Pin
+                | TokenKind::Match
+                | TokenKind::Type
+                | TokenKind::Asm
+                | TokenKind::When
+                | TokenKind::Trait
+                | TokenKind::Impl
+                | TokenKind::Export
+                | TokenKind::Internal
+                | TokenKind::Async
+                | TokenKind::Await
+                | TokenKind::Comptime
+                | TokenKind::Peripheral
+                | TokenKind::Mut
+        )
     }
 
     fn expect(&mut self, kind: TokenKind, what: &str) {
@@ -856,6 +1314,43 @@ impl Parser {
         } else {
             false
         }
+    }
+
+    fn eat_semi(&mut self) {
+        self.eat(TokenKind::Semicolon);
+    }
+
+    fn at_for_sep(&self) -> bool {
+        self.at(TokenKind::Semicolon) || self.at(TokenKind::Comma)
+    }
+
+    fn eat_for_sep(&mut self) {
+        if !self.eat(TokenKind::Semicolon) {
+            self.eat(TokenKind::Comma);
+        }
+    }
+
+    fn looks_like_expr_start(&self) -> bool {
+        matches!(
+            self.peek().kind,
+            TokenKind::Ident
+                | TokenKind::Integer
+                | TokenKind::Float
+                | TokenKind::String
+                | TokenKind::Char
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::LParen
+                | TokenKind::Minus
+                | TokenKind::Plus
+                | TokenKind::Bang
+                | TokenKind::Tilde
+                | TokenKind::Star
+                | TokenKind::Amp
+                | TokenKind::PlusPlus
+                | TokenKind::MinusMinus
+                | TokenKind::SelfKw
+        ) || self.at_ident_like()
     }
 
     fn at(&self, kind: TokenKind) -> bool {
@@ -916,6 +1411,15 @@ impl Parser {
                     | TokenKind::Reg
                     | TokenKind::Extern
                     | TokenKind::Hash
+                    | TokenKind::Impl
+                    | TokenKind::Trait
+                    | TokenKind::Type
+                    | TokenKind::Pin
+                    | TokenKind::Peripheral
+                    | TokenKind::Export
+                    | TokenKind::Internal
+                    | TokenKind::Comptime
+                    | TokenKind::Async
             ) {
                 break;
             }
@@ -944,8 +1448,58 @@ fn primitive_from_kind(kind: TokenKind) -> Option<PrimitiveTy> {
     })
 }
 
+fn parse_bit_type(name: &str) -> Option<(bool, u8)> {
+    let (signed, rest) = if let Some(r) = name.strip_prefix('u') {
+        (false, r)
+    } else if let Some(r) = name.strip_prefix('i') {
+        (true, r)
+    } else {
+        return None;
+    };
+    if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let width: u8 = rest.parse().ok()?;
+    if (1..=64).contains(&width) {
+        if matches!(width, 8 | 16 | 32 | 64) {
+            return None;
+        }
+        Some((signed, width))
+    } else {
+        None
+    }
+}
+
+fn split_bit_suffix(raw: &str) -> Option<(&str, bool, u8)> {
+    let bytes = raw.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 && bytes[i - 1].is_ascii_digit() {
+        i -= 1;
+    }
+    if i == 0 {
+        return None;
+    }
+    let tag = bytes[i - 1] as char;
+    if tag != 'u' && tag != 'i' {
+        return None;
+    }
+    let num = &raw[..i - 1];
+    let suf = &raw[i - 1..];
+    if !num.ends_with(|c: char| c.is_ascii_digit() || c == '_') {
+        return None;
+    }
+    let (signed, width) = parse_bit_type(suf)?;
+    Some((num, signed, width))
+}
+
+pub fn int_bit_suffix(raw: &str) -> Option<(bool, u8)> {
+    split_bit_suffix(raw).map(|(_, s, w)| (s, w))
+}
+
+#[allow(unused_assignments)]
 pub fn parse_int_literal(raw: &str) -> (i128, Option<PrimitiveTy>) {
-    let mut body = raw;
+    let mut owned: Option<String> = None;
+    let mut body: &str = raw;
     let mut suffix = None;
     for s in [
         "int", "usize", "isize", "u16", "u32", "u64", "i16", "i32", "i64", "u8", "i8", "f32", "f64",
@@ -956,6 +1510,12 @@ pub fn parse_int_literal(raw: &str) -> (i128, Option<PrimitiveTy>) {
                 suffix = PrimitiveTy::from_suffix(s);
                 break;
             }
+        }
+    }
+    if suffix.is_none() {
+        if let Some((num, _signed, _width)) = split_bit_suffix(raw) {
+            owned = Some(num.to_string());
+            body = owned.as_deref().unwrap();
         }
     }
     let cleaned: String = body.chars().filter(|&c| c != '_').collect();
@@ -1028,7 +1588,7 @@ mod tests {
 
     #[test]
     fn parses_function() {
-        let m = parse("i32 add(i32 a, i32 b) { return a + b; }");
+        let m = parse("i32 add(i32 a, i32 b) { return a + b }");
         assert_eq!(m.items.len(), 1);
         match &m.items[0] {
             Item::Fn(f) => assert_eq!(f.name.name, "add"),
@@ -1050,7 +1610,7 @@ mod tests {
 
     #[test]
     fn parses_int_function() {
-        let m = parse("int add(int a, int b) { return a + b; }");
+        let m = parse("int add(int a, int b) { return a + b }");
         match &m.items[0] {
             Item::Fn(f) => {
                 assert_eq!(f.name.name, "add");
@@ -1065,7 +1625,15 @@ mod tests {
 
     #[test]
     fn parses_register_and_use() {
-        let m = parse("module blink;\nuse volt.delay;\nreg u8 PORTB @ 0x25;\n");
+        let m = parse("module blink\nuse volt.delay\nreg u8 PORTB @ 0x25\n");
+        assert_eq!(m.items.len(), 2);
+    }
+
+    #[test]
+    fn parses_without_semicolons() {
+        let m = parse(
+            "module add\nint add(int a, int b) {\n    return a + b\n}\nint main() {\n    return add(40, 2)\n}\n",
+        );
         assert_eq!(m.items.len(), 2);
     }
 
@@ -1091,7 +1659,7 @@ mod tests {
 
     #[test]
     fn parses_arithmetic_and_comparisons() {
-        let m = parse("int main() { return (1 + 2 - 3) * 4 / 5; }");
+        let m = parse("int main() { return (1 + 2 - 3) * 4 / 5 }");
         match &m.items[0] {
             Item::Fn(f) => assert!(matches!(
                 &f.body.as_ref().unwrap().stmts[0],
@@ -1099,7 +1667,7 @@ mod tests {
             )),
             _ => panic!("expected fn"),
         }
-        let m = parse("int main() { return 1 < 2; }");
+        let m = parse("int main() { return 1 < 2 }");
         match &m.items[0] {
             Item::Fn(f) => match &f.body.as_ref().unwrap().stmts[0] {
                 Stmt::Return(Some(e), _) => match &e.kind {
@@ -1110,7 +1678,7 @@ mod tests {
             },
             _ => panic!("expected fn"),
         }
-        let m = parse("int main() { return 2 > 1; }");
+        let m = parse("int main() { return 2 > 1 }");
         match &m.items[0] {
             Item::Fn(f) => match &f.body.as_ref().unwrap().stmts[0] {
                 Stmt::Return(Some(e), _) => match &e.kind {
@@ -1125,7 +1693,7 @@ mod tests {
 
     #[test]
     fn parses_if_else() {
-        let m = parse("function f() { if (x) { return 1; } else { return 0; } }");
+        let m = parse("function f() { if (x) { return 1 } else { return 0 } }");
         match &m.items[0] {
             Item::Fn(f) => match &f.body.as_ref().unwrap().stmts[0] {
                 Stmt::If(i) => assert!(i.else_branch.is_some()),
@@ -1137,7 +1705,7 @@ mod tests {
 
     #[test]
     fn parses_const_local() {
-        let m = parse("function f() { const int n = 4; }");
+        let m = parse("function f() { const int n = 4 }");
         match &m.items[0] {
             Item::Fn(f) => match &f.body.as_ref().unwrap().stmts[0] {
                 Stmt::Local(l) => {
