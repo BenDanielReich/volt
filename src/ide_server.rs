@@ -116,7 +116,10 @@ fn handle(mut stream: TcpStream) -> Result<(), String> {
     let request_line = lines.next().unwrap_or("");
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("/");
+    let raw_path = parts.next().unwrap_or("/");
+    let query = raw_path.split('?').nth(1).unwrap_or("");
+    let path = strip_query(raw_path);
+    let path = path.as_str();
 
     let mut content_length = 0usize;
     for line in lines.by_ref() {
@@ -147,7 +150,8 @@ fn handle(mut stream: TcpStream) -> Result<(), String> {
 
     match (method, path) {
         ("GET", "/") | ("GET", "/index.html") => {
-            write_http(&mut stream, "200 OK", "text/html; charset=utf-8", INDEX_HTML.as_bytes())
+            let html = index_html();
+            write_http(&mut stream, "200 OK", "text/html; charset=utf-8", html.as_bytes())
         }
         ("GET", "/api/meta") => json(&mut stream, meta_json()),
         ("GET", "/api/examples") => json(&mut stream, examples_json()),
@@ -158,13 +162,69 @@ fn handle(mut stream: TcpStream) -> Result<(), String> {
         ("POST", "/api/analyze") => json(&mut stream, analyze_json(&body)),
         ("POST", "/api/complete") => json(&mut stream, complete_json(&body)),
         ("POST", "/api/hover") => json(&mut stream, hover_json(&body)),
+        ("GET", "/api/tools") => json(&mut stream, tools_status_json(query)),
+        ("POST", "/api/tools/install") => json(&mut stream, tools_install_json(&body)),
+        ("POST", "/api/flash") => json(&mut stream, flash_json(&body)),
         _ => write_http(&mut stream, "404 Not Found", "text/plain", b"not found"),
     }
 }
 
+fn strip_query(path: &str) -> String {
+    path.split('?').next().unwrap_or("/").to_string()
+}
+
+fn index_html() -> String {
+    for candidate in index_html_paths() {
+        if let Ok(src) = std::fs::read_to_string(&candidate) {
+            if src.contains("file-group") {
+                return src;
+            }
+        }
+    }
+    INDEX_HTML.to_string()
+}
+
+fn index_html_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(p) = std::env::var("VOLT_IDE_HTML") {
+        if !p.trim().is_empty() {
+            out.push(PathBuf::from(p));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        out.push(cwd.join("ide/index.html"));
+        out.push(cwd.join("ide/web/index.html"));
+        out.push(cwd.join("index.html"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            out.push(dir.join("../Resources/ide/index.html"));
+            out.push(dir.join("ide/web/index.html"));
+            let mut walk = dir.to_path_buf();
+            for _ in 0..8 {
+                let cand = walk.join("ide/web/index.html");
+                if cand.is_file() {
+                    out.push(cand);
+                    break;
+                }
+                match walk.parent() {
+                    Some(p) => walk = p.to_path_buf(),
+                    None => break,
+                }
+            }
+        }
+    }
+    out
+}
+
 fn write_http(stream: &mut TcpStream, status: &str, ctype: &str, body: &[u8]) -> Result<(), String> {
+    let cache = if ctype.contains("html") {
+        "Cache-Control: no-store, no-cache, must-revalidate\r\nPragma: no-cache\r\n"
+    } else {
+        ""
+    };
     let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n{cache}Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes()).map_err(|e| e.to_string())?;
@@ -205,6 +265,7 @@ fn meta_json() -> serde_json::Value {
                 "root": ws.root.to_string_lossy(),
                 "projects": ws.projects.to_string_lossy(),
                 "addons": ws.addons.to_string_lossy(),
+                "tools": ws.tools.to_string_lossy(),
             }),
             Err(e) => serde_json::json!({ "error": e }),
         },
@@ -280,6 +341,8 @@ fn open_folder_json(body: &str) -> serde_json::Value {
         Ok(ws) => {
             let path = if which == "addons" {
                 ws.addons
+            } else if which == "tools" {
+                ws.tools
             } else {
                 ws.projects
             };
@@ -299,6 +362,8 @@ struct AnalyzeReq {
     target: String,
     #[serde(default = "default_name")]
     name: String,
+    #[serde(default)]
+    firmware: bool,
 }
 
 fn default_target() -> String {
@@ -312,7 +377,32 @@ fn analyze_json(body: &str) -> serde_json::Value {
     match serde_json::from_str::<AnalyzeReq>(body) {
         Ok(req) => match ide::options_for(&req.target, None) {
             Ok(opts) => {
-                let result: AnalyzeResult = ide::analyze(&req.name, &req.source, &opts);
+                let mut result: AnalyzeResult = ide::analyze(&req.name, &req.source, &opts);
+                if req.firmware && result.ok {
+                    if let (Some(c), Some(board)) = (
+                        result.c_source.as_ref(),
+                        crate::board::find_board(&req.target),
+                    ) {
+                        if let Ok(ws) = crate::workspace::ensure() {
+                            let out = ws.root.join("build").join(
+                                PathBuf::from(&req.name)
+                                    .file_stem()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .as_ref(),
+                            );
+                            match crate::toolchain::build_firmware(c, board, &out) {
+                                Ok(path) => {
+                                    result.firmware =
+                                        Some(format!("firmware {}", path.display()));
+                                }
+                                Err(e) => {
+                                    result.firmware = Some(e);
+                                }
+                            }
+                        }
+                    }
+                }
                 serde_json::to_value(result).unwrap_or(serde_json::json!({"ok": false}))
             }
             Err(e) => serde_json::json!({"ok": false, "diagnostics": [{"level":"error","message": e, "file":"","line":1,"col":1,"end_line":1,"end_col":1}]}),
@@ -349,7 +439,123 @@ fn hover_json(body: &str) -> serde_json::Value {
     }
 }
 
+fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    query.split('&').find_map(|pair| {
+        let mut it = pair.splitn(2, '=');
+        let k = it.next()?;
+        let v = it.next().unwrap_or("");
+        (k == key).then_some(v)
+    })
+}
+
+fn tools_status_json(query: &str) -> serde_json::Value {
+    if let Some(board) = query_param(query, "board") {
+        if !board.is_empty() {
+            return serde_json::to_value(crate::toolchain::status_for_board(board))
+                .unwrap_or(serde_json::json!({}));
+        }
+    }
+    serde_json::json!({
+        "packs": crate::toolchain::list_status(),
+        "dir": crate::toolchain::user_tools_dir().map(|p| p.display().to_string()).ok(),
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct ToolsInstallReq {
+    #[serde(default)]
+    pack: String,
+    #[serde(default)]
+    board: String,
+}
+
+fn tools_install_json(body: &str) -> serde_json::Value {
+    let req: ToolsInstallReq = serde_json::from_str(body).unwrap_or(ToolsInstallReq {
+        pack: String::new(),
+        board: String::new(),
+    });
+    let pack = if !req.pack.is_empty() {
+        req.pack
+    } else if let Some(b) = crate::board::find_board(&req.board) {
+        crate::toolchain::pack_id_for_board(b)
+            .unwrap_or("")
+            .to_string()
+    } else {
+        String::new()
+    };
+    if pack.is_empty() {
+        return serde_json::json!({ "ok": false, "error": "this board uses the computer's C compiler — nothing to download" });
+    }
+    match crate::toolchain::install(&pack) {
+        Ok(st) => serde_json::json!({ "ok": true, "status": st }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct FlashReq {
+    source: String,
+    #[serde(default = "default_target")]
+    target: String,
+    #[serde(default = "default_name")]
+    name: String,
+    #[serde(default)]
+    port: String,
+}
+
+fn flash_json(body: &str) -> serde_json::Value {
+    match serde_json::from_str::<FlashReq>(body) {
+        Ok(req) => {
+            let Some(board) = crate::board::find_board(&req.target) else {
+                return serde_json::json!({ "ok": false, "error": crate::board::unknown_board_message(&req.target) });
+            };
+            let Ok(opts) = ide::options_for(&req.target, None) else {
+                return serde_json::json!({ "ok": false, "error": "bad board" });
+            };
+            match ide::analyze(&req.name, &req.source, &opts) {
+                result if result.ok => {
+                    let Some(c) = result.c_source else {
+                        return serde_json::json!({ "ok": false, "error": "no C" });
+                    };
+                    let Ok(ws) = crate::workspace::ensure() else {
+                        return serde_json::json!({ "ok": false, "error": "no workspace" });
+                    };
+                    let out = ws.root.join("build").join("flash");
+                    match crate::toolchain::build_firmware(&c, board, &out) {
+                        Ok(fw) => {
+                            let port = if req.port.is_empty() {
+                                crate::ports::preferred_port().unwrap_or_default()
+                            } else {
+                                req.port
+                            };
+                            match crate::toolchain::flash_firmware(&fw, board, &port) {
+                                Ok(log) => serde_json::json!({ "ok": true, "firmware": fw.display().to_string(), "log": log }),
+                                Err(e) => serde_json::json!({ "ok": false, "error": e, "firmware": fw.display().to_string() }),
+                            }
+                        }
+                        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                    }
+                }
+                result => serde_json::json!({ "ok": false, "diagnostics": result.diagnostics, "error": "fix errors before flashing" }),
+            }
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
 #[allow(dead_code)]
 fn _std_hint() -> PathBuf {
     PathBuf::from("std")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bundled_html_has_sidebar_groups() {
+        assert!(super::INDEX_HTML.contains("Libraries"));
+        assert!(super::INDEX_HTML.contains("Examples"));
+        assert!(super::INDEX_HTML.contains("data-group=\"files\""));
+        assert!(super::INDEX_HTML.contains("group-head"));
+        assert!(!super::INDEX_HTML.contains("<summary"));
+    }
 }

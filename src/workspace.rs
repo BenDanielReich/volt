@@ -9,6 +9,7 @@ pub struct Workspace {
     pub root: PathBuf,
     pub projects: PathBuf,
     pub addons: PathBuf,
+    pub tools: PathBuf,
 }
 
 pub fn home_dir() -> PathBuf {
@@ -39,10 +40,13 @@ pub fn ensure() -> Result<Workspace, String> {
 fn ensure_at(root: PathBuf) -> Result<Workspace, String> {
     let projects = root.join("projects");
     let addons = root.join("addons");
+    let tools = root.join("tools");
     std::fs::create_dir_all(&projects)
         .map_err(|e| format!("cannot create {}: {e}", projects.display()))?;
     std::fs::create_dir_all(&addons)
         .map_err(|e| format!("cannot create {}: {e}", addons.display()))?;
+    std::fs::create_dir_all(&tools)
+        .map_err(|e| format!("cannot create {}: {e}", tools.display()))?;
     write_if_missing(
         &projects.join("README.txt"),
         "Your Volt programs live in this folder.\n\n\
@@ -58,10 +62,17 @@ fn ensure_at(root: PathBuf) -> Result<Workspace, String> {
          Then in a project:\n\n\
          #include <servo>\n",
     );
+    write_if_missing(
+        &tools.join("README.txt"),
+        "Chip compilers live here (AVR is also inside the Volt app).\n\n\
+         The IDE Get compiler button unpacks Pico / ESP toolchains into this folder.\n\
+         You can also run:  voltc tools install arm\n",
+    );
     Ok(Workspace {
         root,
         projects,
         addons,
+        tools,
     })
 }
 
@@ -207,6 +218,7 @@ mod tests {
         let ws = ensure_at(dir.clone()).expect("workspace");
         assert!(ws.projects.is_dir());
         assert!(ws.addons.is_dir());
+        assert!(ws.tools.is_dir());
         let saved = save_project_in(&ws, "hello", "function main() { return }\n").expect("save");
         assert!(saved.ends_with("hello.volt"));
         assert!(list_volt_files(&ws.projects, 2)

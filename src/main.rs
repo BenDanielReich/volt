@@ -30,7 +30,7 @@ fn run(args: &[String]) -> Result<(), ExitCode> {
     let (cmd, rest) = match args.first().map(String::as_str) {
         Some("compile") | Some("check") | Some("tokens") | Some("ast") | Some("svd")
         | Some("report") | Some("ide") | Some("app") | Some("lsp") | Some("boards")
-        | Some("ports") | Some("home") => {
+        | Some("ports") | Some("home") | Some("tools") | Some("flash") => {
             (args[0].as_str(), &args[1..])
         }
         Some(_) => ("compile", args),
@@ -61,6 +61,7 @@ fn run(args: &[String]) -> Result<(), ExitCode> {
                 println!("home      {}", ws.root.display());
                 println!("projects  {}", ws.projects.display());
                 println!("addons    {}", ws.addons.display());
+                println!("tools     {}", ws.tools.display());
                 return Ok(());
             }
             Err(e) => {
@@ -87,6 +88,12 @@ fn run(args: &[String]) -> Result<(), ExitCode> {
             println!("  {:<14} {:<28} {}", b.name, b.display, fqbn);
         }
         return Ok(());
+    }
+    if cmd == "tools" {
+        return run_tools(rest);
+    }
+    if cmd == "flash" {
+        return run_flash(rest);
     }
     if cmd == "ports" {
         let ports = voltc::ports::list_serial_ports();
@@ -129,6 +136,8 @@ struct Args {
     emit: String,
     include_paths: Vec<PathBuf>,
     std_path: Option<PathBuf>,
+    firmware: bool,
+    port: Option<String>,
 }
 
 fn parse_args(args: &[String]) -> Result<Args, String> {
@@ -139,6 +148,8 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         emit: "c".into(),
         include_paths: Vec::new(),
         std_path: None,
+        firmware: false,
+        port: None,
     };
     let mut i = 0;
     while i < args.len() {
@@ -146,7 +157,13 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         match a.as_str() {
             "-o" | "--output" => {
                 i += 1;
-                out.output = Some(PathBuf::from(args.get(i).ok_or("missing argument for -o")?));
+                let p = PathBuf::from(args.get(i).ok_or("missing argument for -o")?);
+                if p.extension().and_then(|s| s.to_str()) == Some("hex")
+                    || p.extension().and_then(|s| s.to_str()) == Some("elf")
+                {
+                    out.firmware = true;
+                }
+                out.output = Some(p);
             }
             "--target" | "--board" => {
                 i += 1;
@@ -170,6 +187,15 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                     args.get(i).ok_or("missing argument for --std-path")?,
                 ));
             }
+            "--firmware" | "--hex" => out.firmware = true,
+            "--port" => {
+                i += 1;
+                out.port = Some(
+                    args.get(i)
+                        .ok_or("missing argument for --port")?
+                        .clone(),
+                );
+            },
             s if s.starts_with('-') => return Err(format!("unknown option `{s}`")),
             s => {
                 if out.input.is_some() {
@@ -248,7 +274,23 @@ fn compile(path: &Path, args: &Args) -> Result<(), ExitCode> {
     let opts = options_from(args)?;
     match driver::compile_file(path, &opts) {
         Ok(result) => {
-            if let Some(out) = &args.output {
+            if args.firmware {
+                if let Some(board) = voltc::board::find_board(&args.target) {
+                    let dir = args
+                        .output
+                        .as_ref()
+                        .and_then(|p| p.parent())
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."));
+                    match voltc::toolchain::build_firmware(&result.c_source, board, &dir) {
+                        Ok(fw) => eprintln!("firmware {}", fw.display()),
+                        Err(e) => {
+                            eprintln!("error: {e}");
+                            return Err(ExitCode::from(1));
+                        }
+                    }
+                }
+            } else if let Some(out) = &args.output {
                 if let Err(e) = std::fs::write(out, &result.c_source) {
                     eprintln!("error: cannot write {}: {e}", out.display());
                     return Err(ExitCode::from(1));
@@ -400,13 +442,15 @@ fn print_help() {
 voltc {VERSION} — Volt compiler (C++-like language for microcontrollers)
 
 Usage:
-  voltc compile <file.volt> [-o out.c] [--board uno]
+  voltc compile <file.volt> [-o out.c] [--board uno] [--firmware]
   voltc check   <file.volt>
   voltc ast     <file.volt>
   voltc tokens  <file.volt>
   voltc report  <file.volt>
   voltc svd     <file.svd> [-o out.volt]
   voltc boards  [query]
+  voltc tools   [install <avr|arm|esp8266|esp32>]
+  voltc flash   <file.volt> [--board uno] [--port /dev/cu.usbmodem*]
   voltc home
   voltc ports
   voltc ide     [--port 8741] [--no-open] [--window]
@@ -414,8 +458,9 @@ Usage:
   voltc lsp
 
 Options:
-  -o, --output <path>     Write generated C (or Volt, for svd) to a file
+  -o, --output <path>     Write generated C (or firmware, for .hex) to a file
   --board, --target <id>  Arduino FQBN or id (`voltc boards [query]`)
+  --firmware, --hex       Also run the board compiler (needs `voltc tools`)
   --emit <kind>           c | ast | tokens | report
   -I <dir>                Extra module search path
   --std-path <dir>        Standard library root (default: ./std)
@@ -428,8 +473,88 @@ Options:
   -V, --version           Show version
 
 Pipeline:
-  .volt  →  lexer  →  parser  →  sema  →  C  →  your MCU toolchain
+  .volt  →  lexer  →  parser  →  sema  →  C  →  bundled avr-gcc / ARM / ESP
 "
     );
     let _ = HOST;
+}
+
+fn run_tools(args: &[String]) -> Result<(), ExitCode> {
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    if sub == "install" {
+        let pack = args.get(1).map(String::as_str).unwrap_or("");
+        if pack.is_empty() {
+            eprintln!("error: voltc tools install <avr|arm|esp8266|esp32>");
+            return Err(ExitCode::from(2));
+        }
+        eprintln!("downloading {pack} into Documents/Volt/tools …");
+        match voltc::toolchain::install(pack) {
+            Ok(st) => {
+                println!("{}  {}", st.pack, st.note);
+                if let Some(cc) = st.cc {
+                    println!("cc  {cc}");
+                }
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                Err(ExitCode::from(1))
+            }
+        }
+    } else {
+        println!("id       shipped  ready  name");
+        for st in voltc::toolchain::list_status() {
+            println!(
+                "{:<8} {:<7} {:<5} {}",
+                st.pack,
+                if st.ships_in_installer { "yes" } else { "no" },
+                if st.installed { "yes" } else { "no" },
+                st.name
+            );
+        }
+        if let Ok(dir) = voltc::toolchain::user_tools_dir() {
+            println!("dir  {}", dir.display());
+        }
+        Ok(())
+    }
+}
+
+fn run_flash(args: &[String]) -> Result<(), ExitCode> {
+    let parsed = parse_args(args).map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(2)
+    })?;
+    let Some(input) = parsed.input.clone() else {
+        eprintln!("error: missing input file");
+        return Err(ExitCode::from(2));
+    };
+    let board = voltc::board::find_board(&parsed.target).ok_or_else(|| {
+        eprintln!("error: {}", voltc::board::unknown_board_message(&parsed.target));
+        ExitCode::from(2)
+    })?;
+    let opts = options_from(&parsed)?;
+    let result = driver::compile_file(Path::new(&input), &opts).map_err(|err| {
+        let _ = print_compile_fail(&err);
+        ExitCode::from(1)
+    })?;
+    let out = std::env::temp_dir().join("volt-flash");
+    let fw = voltc::toolchain::build_firmware(&result.c_source, board, &out).map_err(|e| {
+        eprintln!("error: {e}");
+        ExitCode::from(1)
+    })?;
+    let port = parsed
+        .port
+        .or_else(|| std::env::var("VOLT_PORT").ok().filter(|s| !s.is_empty()))
+        .or_else(voltc::ports::preferred_port)
+        .unwrap_or_default();
+    match voltc::toolchain::flash_firmware(&fw, board, &port) {
+        Ok(log) => {
+            print!("{log}");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            Err(ExitCode::from(1))
+        }
+    }
 }

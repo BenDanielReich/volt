@@ -23,7 +23,7 @@ cargo run --features app --bin volt
 
 The window is WKWebView (macOS) or WebView2 (Windows 11 / Edge runtime).
 `std/` and `examples/` ship next to the binary (inside `Contents/Resources`
-on macOS).
+on macOS). AVR gcc ships in the **installer** (`./scripts/make-installer.sh` → `dist/Volt.pkg`). Pico/ESP: **Get compiler** in the IDE.
 
 ## Web IDE (`voltc ide`)
 

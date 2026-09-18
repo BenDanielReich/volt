@@ -274,6 +274,40 @@ pub fn format_diagnostics(diags: &[Diagnostic], sources: &SourceMap) -> String {
     diagnostic::render_all(diags, sources)
 }
 
+pub fn runtime_search_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let bundled = dir.join("../Resources/runtime");
+            if bundled.is_dir() {
+                roots.push(bundled);
+            }
+            if dir.join("runtime").is_dir() {
+                roots.push(dir.join("runtime"));
+            }
+            let mut walk = dir.to_path_buf();
+            for _ in 0..8 {
+                let Some(parent) = walk.parent() else {
+                    break;
+                };
+                walk = parent.to_path_buf();
+                let candidate = walk.join("runtime");
+                if candidate.is_dir() && walk.join("Cargo.toml").is_file() {
+                    roots.push(candidate);
+                    break;
+                }
+            }
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.join("runtime").is_dir() {
+            roots.push(cwd.join("runtime"));
+        }
+    }
+    roots.push(PathBuf::from("runtime"));
+    roots
+}
+
 pub fn default_std_path() -> PathBuf {
     if let Ok(p) = std::env::var("VOLT_STD") {
         return PathBuf::from(p);
