@@ -15,8 +15,14 @@ Copy-Item (Join-Path $Root "target\release\volt.exe") (Join-Path $Out "Volt.exe"
 Copy-Item (Join-Path $Root "target\release\voltc.exe") (Join-Path $Out "voltc.exe")
 Copy-Item -Recurse (Join-Path $Root "std") (Join-Path $Out "std")
 Copy-Item -Recurse (Join-Path $Root "examples") (Join-Path $Out "examples")
+New-Item -ItemType Directory -Force -Path (Join-Path $Out "ide") | Out-Null
+Copy-Item (Join-Path $Root "ide\web\index.html") (Join-Path $Out "ide\index.html")
 if (Test-Path (Join-Path $Root "runtime")) {
     Copy-Item -Recurse (Join-Path $Root "runtime") (Join-Path $Out "runtime")
+}
+if (Test-Path (Join-Path $Root "tools\avr")) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $Out "tools") | Out-Null
+    Copy-Item -Recurse (Join-Path $Root "tools\avr") (Join-Path $Out "tools\avr")
 }
 if (Test-Path (Join-Path $Root "ide\windows\Volt.ico")) {
     Copy-Item (Join-Path $Root "ide\windows\Volt.ico") (Join-Path $Out "Volt.ico")

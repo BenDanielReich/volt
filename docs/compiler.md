@@ -44,6 +44,7 @@ SourceMap
 | `codegen`     | Pretty-printed C                                    |
 | `target`      | MCU / host descriptions                             |
 | `board`       | Out-of-box Arduino FQBNs, USB ids, runtimes         |
+| `toolchain`   | AVR-in-installer + on-demand Pico/ESP downloads     |
 | `driver`      | Glue: load → compile → emit                         |
 | `report`      | Stack / ISR / peripheral resource report            |
 | `svd`         | CMSIS-SVD XML → Volt `reg` source                   |

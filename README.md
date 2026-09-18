@@ -103,6 +103,21 @@ cargo run -- compile examples/blink.volt --board uno
 
 The native app is `dist/Volt.app` after `./scripts/package-macos.sh` (or `cargo run --features app --bin volt`). `voltc ide` still opens the browser via `open`. Double-click `ide/macos/volt-ide.command` for the browser launcher.
 
+### Installer (AVR compiler inside)
+
+```bash
+./scripts/make-installer.sh
+open dist/Volt.pkg
+```
+
+That puts **Volt.app** in `/Applications` with Arduino's `avr-gcc` + `avrdude` already in the bundle. Pico / ESP compilers are **not** in the pkg — pick that board in the IDE and click **Get compiler** (unpacks into `Documents/Volt/tools`). Same from the CLI:
+
+```bash
+voltc tools
+voltc tools install arm
+voltc tools install esp8266
+```
+
 Plug in an UNO/Nano/Mega and `voltc ports` should list `/dev/cu.usbmodem*` (native USB) or `/dev/cu.usbserial*` (FTDI/CH340). Flash with that port:
 
 ```bash
@@ -132,6 +147,15 @@ dist\Volt\Volt.exe
 ```
 
 That needs the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (already on Windows 11). Browser launcher: `ide\windows\volt-ide.cmd` or `.\ide\windows\volt-ide.ps1`.
+
+Installer (copies into `%LOCALAPPDATA%\Volt` and a Start Menu shortcut):
+
+```bat
+.\scripts\make-installer.ps1
+dist\Install-Volt.cmd
+```
+
+Put AVR tools in `tools\avr` first (or click **Get compiler** in the IDE after install).
 
 `voltc lsp` uses binary stdio so Content-Length is not corrupted by CRLF translation. Point Cursor/VS Code at `target\debug\voltc.exe` via the `volt.path` setting, or install `ide\vscode`.
 

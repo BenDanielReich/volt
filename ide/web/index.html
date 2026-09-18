@@ -63,27 +63,33 @@
       border: 1px solid var(--border); padding: 1px 5px; border-radius: 4px; }
     #main { display: grid; grid-template-columns: 220px 1fr 1fr; min-height: 0; }
     #files { background: var(--panel); border-right: 1px solid var(--border); overflow: auto; padding: 0; }
-    #files details.file-group { border-bottom: 1px solid var(--border); }
-    #files summary {
-      list-style: none; display: flex; align-items: center; gap: 6px;
-      font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-      color: var(--muted); margin: 0; padding: 8px 10px 8px 12px; cursor: pointer;
-      user-select: none;
+    #files .file-group { border-bottom: 1px solid var(--border); }
+    #files .group-title {
+      display: -webkit-flex; display: flex; align-items: center; gap: 6px;
+      padding: 0 8px 0 0;
     }
-    #files summary::-webkit-details-marker { display: none; }
-    #files summary::before { content: '▸'; font-size: 10px; width: 10px; color: var(--muted); }
-    #files details[open] > summary::before { content: '▾'; }
-    #files summary .label { flex: 1; }
+    #files .group-head {
+      -webkit-flex: 1; flex: 1; display: -webkit-flex; display: flex; align-items: center; gap: 6px;
+      background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit;
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+      text-align: left; padding: 8px 6px 8px 12px; width: auto;
+    }
+    #files .group-head .chev { width: 10px; font-size: 10px; }
+    #files .file-group.open .group-head .chev { transform: rotate(90deg); }
+    #files .group-body { display: none; }
+    #files .file-group.open .group-body { display: block; }
     #files button.file-item {
       display: block; width: 100%; text-align: left; background: none; border: 0;
       color: var(--text); padding: 7px 14px 7px 28px; cursor: pointer; font: inherit;
     }
     #files button.link, header button.link {
-      display: inline; width: auto; padding: 0; color: var(--muted); font-size: 11px;
-      text-transform: none; letter-spacing: 0;
+      display: inline; width: auto; padding: 0 8px 0 0; color: var(--muted); font-size: 11px;
+      text-transform: none; letter-spacing: 0; background: none; border: 0; cursor: pointer;
     }
     #files button.link:hover { color: var(--accent); background: none; }
-    #files button.file-item:hover, #files button.file-item.active { background: #21262d; color: var(--accent); }
+    #files .group-head:hover, #files button.file-item:hover, #files button.file-item.active {
+      background: #21262d; color: var(--accent);
+    }
     #files .empty { padding: 6px 14px 10px 28px; color: var(--muted); font-size: 12px; }
     #editor { min-width: 0; min-height: 0; }
     #side {
@@ -119,7 +125,9 @@
       </div>
       <select id="sport" title="Serial port"></select>
       <button class="primary" id="compile">Compile <kbd id="runkey">Ctrl+Enter</kbd></button>
+      <button id="flash">Flash</button>
       <button id="check">Check</button>
+      <button id="getcompiler" hidden title="Download this board's compiler into Documents/Volt/tools">Get compiler</button>
       <button id="newfile">New</button>
       <button id="savefile">Save</button>
       <div class="spacer"></div>
@@ -127,18 +135,26 @@
     </header>
     <div id="main">
       <nav id="files">
-        <details class="file-group" open data-group="libraries">
-          <summary><span class="label">Libraries</span> <button type="button" class="link" id="openaddons">folder</button></summary>
-          <div id="addonlist"></div>
-        </details>
-        <details class="file-group" open data-group="examples">
-          <summary><span class="label">Examples</span></summary>
-          <div id="filelist"></div>
-        </details>
-        <details class="file-group" open data-group="files">
-          <summary><span class="label">Files</span> <button type="button" class="link" id="openprojects">folder</button></summary>
-          <div id="projectlist"></div>
-        </details>
+        <section class="file-group open" data-group="libraries">
+          <div class="group-title">
+            <button type="button" class="group-head"><span class="chev">▸</span> Libraries</button>
+            <button type="button" class="link" id="openaddons">folder</button>
+          </div>
+          <div id="addonlist" class="group-body"></div>
+        </section>
+        <section class="file-group open" data-group="examples">
+          <div class="group-title">
+            <button type="button" class="group-head"><span class="chev">▸</span> Examples</button>
+          </div>
+          <div id="filelist" class="group-body"></div>
+        </section>
+        <section class="file-group open" data-group="files">
+          <div class="group-title">
+            <button type="button" class="group-head"><span class="chev">▸</span> Files</button>
+            <button type="button" class="link" id="openprojects">folder</button>
+          </div>
+          <div id="projectlist" class="group-body"></div>
+        </section>
       </nav>
       <div id="editor"></div>
       <div id="side">
@@ -219,7 +235,8 @@
       } else if (currentTab === 'c') {
         pane().textContent = lastResult.c_source || '(no C — fix errors first)';
       } else {
-        pane().textContent = lastResult.report || '(no report)';
+        const extra = lastResult.firmware ? ('\n\n' + lastResult.firmware) : '';
+        pane().textContent = (lastResult.report || '(no report)') + extra;
       }
     }
 
@@ -252,7 +269,23 @@
       document.getElementById('boardsearch').value = boardLabel(b);
       try { localStorage.setItem('volt.board', b.id); } catch (_) {}
       hideBoardList();
+      refreshTools();
       if (recheck && editor) analyze('check');
+    }
+
+    async function refreshTools() {
+      const id = document.getElementById('target').value;
+      const st = await fetch('/api/tools?board=' + encodeURIComponent(id)).then(r => r.json()).catch(() => ({}));
+      const btn = document.getElementById('getcompiler');
+      const status = document.getElementById('status');
+      if (!st.pack || st.pack === 'host') {
+        btn.hidden = true;
+        return;
+      }
+      btn.hidden = !!st.installed;
+      btn.textContent = st.ships_in_installer ? 'Get AVR compiler' : ('Get ' + (st.name || 'compiler'));
+      btn.dataset.pack = st.pack || '';
+      if (st.note) status.textContent = st.installed ? (st.name + ' ready') : st.note;
     }
 
     function hideBoardList() {
@@ -328,7 +361,7 @@
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source, target, name: currentName })
+        body: JSON.stringify({ source, target, name: currentName, firmware: kind === 'compile' })
       });
       lastResult = await res.json();
       const ds = lastResult.diagnostics || [];
@@ -386,16 +419,20 @@
     }
 
     function wireFileGroups() {
-      document.querySelectorAll('.file-group').forEach(d => {
-        const key = 'volt.group.' + d.dataset.group;
+      document.querySelectorAll('.file-group').forEach(g => {
+        const key = 'volt.group.' + g.dataset.group;
+        const head = g.querySelector('.group-head');
         try {
           const saved = localStorage.getItem(key);
-          if (saved === '0') d.open = false;
-          if (saved === '1') d.open = true;
+          if (saved === '0') g.classList.remove('open');
+          if (saved === '1') g.classList.add('open');
         } catch (_) {}
-        d.addEventListener('toggle', () => {
-          try { localStorage.setItem(key, d.open ? '1' : '0'); } catch (_) {}
-        });
+        if (head) {
+          head.onclick = () => {
+            g.classList.toggle('open');
+            try { localStorage.setItem(key, g.classList.contains('open') ? '1' : '0'); } catch (_) {}
+          };
+        }
       });
     }
 
@@ -541,6 +578,42 @@
       b.onclick = () => showTab(b.dataset.tab);
     });
     document.getElementById('compile').onclick = () => analyze('compile');
+    document.getElementById('flash').onclick = async () => {
+      if (!editor) return;
+      document.getElementById('status').textContent = 'flashing…';
+      const res = await fetch('/api/flash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: editor.getValue(),
+          target: document.getElementById('target').value,
+          name: currentName,
+          port: document.getElementById('sport').value
+        })
+      }).then(r => r.json());
+      document.getElementById('status').textContent = res.ok ? 'flashed' : (res.error || 'flash failed');
+      if (res.log || res.error) {
+        lastResult = lastResult || {};
+        lastResult.firmware = res.log || res.error;
+        showTab('report');
+      }
+    };
+    document.getElementById('getcompiler').onclick = async () => {
+      const btn = document.getElementById('getcompiler');
+      const pack = btn.dataset.pack || '';
+      btn.disabled = true;
+      document.getElementById('status').textContent = 'downloading compiler…';
+      const res = await fetch('/api/tools/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pack, board: document.getElementById('target').value })
+      }).then(r => r.json()).catch(e => ({ ok: false, error: String(e) }));
+      btn.disabled = false;
+      document.getElementById('status').textContent = res.ok
+        ? ((res.status && res.status.note) || 'compiler installed')
+        : (res.error || 'download failed');
+      refreshTools();
+    };
     document.getElementById('check').onclick = () => analyze('check');
     document.getElementById('newfile').onclick = () => {
       currentName = 'untitled.volt';

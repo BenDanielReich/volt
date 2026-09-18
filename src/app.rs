@@ -11,6 +11,7 @@ use wry::WebViewBuilder;
 pub fn run() -> Result<(), String> {
     prepare_paths();
     let url = crate::ide_server::spawn("127.0.0.1:0")?;
+    let url = format!("{}?v={}", url.trim_end_matches('/'), env!("CARGO_PKG_VERSION"));
     open_window(&url)
 }
 

@@ -1,0 +1,17 @@
+#!/bin/bash
+# After the pkg finishes: drop quarantine and open Volt for the person at the Mac.
+# This script runs as root, so we must not launch the GUI as root.
+APP="/Applications/Volt.app"
+if [[ ! -d "$APP" ]]; then
+  exit 0
+fi
+
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+
+console_user=$(stat -f '%Su' /dev/console 2>/dev/null || true)
+if [[ -n "$console_user" && "$console_user" != "root" && "$console_user" != "loginwindow" ]]; then
+  sudo -u "$console_user" /usr/bin/open "$APP" || true
+else
+  /usr/bin/open "$APP" || true
+fi
+exit 0

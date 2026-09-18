@@ -40,6 +40,8 @@ pub struct AnalyzeResult {
     pub diagnostics: Vec<IdeDiagnostic>,
     pub c_source: Option<String>,
     pub report: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<String>,
 }
 
 pub fn options_for(target_name: &str, std_path: Option<PathBuf>) -> Result<CompileOptions, String> {
@@ -60,12 +62,14 @@ pub fn analyze(name: &str, src: &str, opts: &CompileOptions) -> AnalyzeResult {
             diagnostics: convert_diags(&result.diagnostics, &result.sources),
             c_source: Some(result.c_source),
             report: Some(result.report),
+            firmware: None,
         },
         Err(err) => AnalyzeResult {
             ok: false,
             diagnostics: convert_diags(&err.diagnostics, &err.sources),
             c_source: None,
             report: None,
+            firmware: None,
         },
     }
 }
@@ -83,6 +87,7 @@ fn from_ok(result: CompileResult) -> AnalyzeResult {
         diagnostics: convert_diags(&result.diagnostics, &result.sources),
         c_source: Some(result.c_source),
         report: Some(result.report),
+        firmware: None,
     }
 }
 
@@ -92,6 +97,7 @@ fn from_err(err: CompileError) -> AnalyzeResult {
         diagnostics: convert_diags(&err.diagnostics, &err.sources),
         c_source: None,
         report: None,
+        firmware: None,
     }
 }
 

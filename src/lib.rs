@@ -22,6 +22,7 @@ pub mod span;
 pub mod svd;
 pub mod target;
 pub mod token;
+pub mod toolchain;
 pub mod workspace;
 
 #[cfg(feature = "app")]
