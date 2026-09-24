@@ -111,6 +111,15 @@
     }
     footer .ok { color: var(--ok); }
     footer .bad { color: var(--err); }
+    .monaco-editor .suggest-widget {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+      font-size: 13px;
+    }
+    .monaco-editor .suggest-widget .monaco-list .monaco-list-row.focused {
+      background: #21262d !important;
+    }
   </style>
 </head>
 <body>
@@ -242,6 +251,14 @@
 
     function escapeHtml(s) {
       return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+    }
+
+    function wordUntil(model, pos) {
+      const line = model.getLineContent(pos.lineNumber);
+      const before = line.slice(0, pos.column - 1);
+      const m = before.match(/[A-Za-z0-9_#.]*$/);
+      const startColumn = pos.column - (m ? m[0].length : 0);
+      return { startColumn: Math.max(1, startColumn), endColumn: pos.column };
     }
 
     let allBoards = [];
@@ -520,26 +537,48 @@
             {open:'"',close:'"'},{open:"'",close:"'"}
           ]
         });
+        const suggestTriggers = ['.', ':', '#', '_'].concat(
+          'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
+        );
         monaco.languages.registerCompletionItemProvider('volt', {
-          triggerCharacters: ['.'],
+          triggerCharacters: suggestTriggers,
           provideCompletionItems: async (model, pos) => {
             const offset = model.getOffsetAt(pos);
+            const word = wordUntil(model, pos);
+            const range = {
+              startLineNumber: pos.lineNumber,
+              startColumn: word.startColumn,
+              endLineNumber: pos.lineNumber,
+              endColumn: word.endColumn
+            };
             const res = await fetch('/api/complete', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ source: model.getValue(), offset, target: sel.value })
-            }).then(r => r.json());
+            }).then(r => r.json()).catch(() => ({ items: [] }));
             const kinds = monaco.languages.CompletionItemKind;
+            const kindOf = (k) => {
+              if (k === 'keyword') return kinds.Keyword;
+              if (k === 'snippet') return kinds.Snippet;
+              if (k === 'function') return kinds.Function;
+              if (k === 'enum') return kinds.EnumMember;
+              if (k === 'constant') return kinds.Constant;
+              return kinds.Variable;
+            };
             return {
-              suggestions: (res.items || []).map(it => ({
-                label: it.label,
-                kind: it.kind === 'keyword' ? kinds.Keyword
-                  : it.kind === 'snippet' ? kinds.Snippet : kinds.Variable,
-                insertText: it.insert,
-                insertTextRules: it.kind === 'snippet'
-                  ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
-                detail: it.detail
-              }))
+              suggestions: (res.items || []).map(it => {
+                const snippet = it.kind === 'snippet' || (it.insert && it.insert.includes('$'));
+                return {
+                  label: it.label,
+                  kind: kindOf(it.kind),
+                  insertText: it.insert,
+                  insertTextRules: snippet
+                    ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
+                  detail: it.detail,
+                  filterText: it.label,
+                  range
+                };
+              })
             };
           }
         });
@@ -562,13 +601,36 @@
           automaticLayout: true,
           minimap: { enabled: false },
           fontSize: 14,
-          tabSize: 4
+          tabSize: 4,
+          quickSuggestions: { other: true, comments: false, strings: false },
+          quickSuggestionsDelay: 40,
+          suggestOnTriggerCharacters: true,
+          wordBasedSuggestions: 'off',
+          acceptSuggestionOnEnter: 'on',
+          tabCompletion: 'on',
+          snippetSuggestions: 'inline',
+          suggest: {
+            insertMode: 'replace',
+            preview: true,
+            showIcons: true,
+            maxVisibleSuggestions: 8,
+            localityBonus: true,
+            selectionMode: 'always'
+          }
         });
         currentName = (projects[0] && projects[0].name) || (examples[0] ? examples[0].name : 'main.volt');
         let timer;
-        editor.onDidChangeModelContent(() => {
+        let suggestTimer;
+        editor.onDidChangeModelContent((e) => {
           clearTimeout(timer);
           timer = setTimeout(() => analyze('check'), 450);
+          if (!e || e.isFlush || e.isUndoing || e.isRedoing) return;
+          const ch = e.changes && e.changes[0] && e.changes[0].text;
+          if (!ch || ch.length !== 1 || !/[\w.#]/.test(ch)) return;
+          clearTimeout(suggestTimer);
+          suggestTimer = setTimeout(() => {
+            editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
+          }, 40);
         });
         analyze('check');
       });
