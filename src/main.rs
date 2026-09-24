@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use voltc::diagnostic::Diagnostic;
 use voltc::driver::{self, CompileOptions};
-use voltc::target::{self, HOST};
+use voltc::target::HOST;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -26,20 +26,45 @@ fn main() -> ExitCode {
     }
 }
 
+const COMMANDS: &[&str] = &[
+    "compile", "check", "tokens", "ast", "svd", "report", "ide", "app", "lsp", "boards",
+    "ports", "home", "tools", "flash", "version",
+];
+
+fn resolve_command(args: &[String]) -> (&str, &[String]) {
+    let Some(first) = args.first().map(String::as_str) else {
+        return ("compile", args);
+    };
+    if let Some(cmd) = COMMANDS.iter().copied().find(|c| c.eq_ignore_ascii_case(first)) {
+        return (cmd, &args[1..]);
+    }
+    if looks_like_path(first) {
+        return ("compile", args);
+    }
+    if let Some(cmd) = voltc::board::unique_typo(first, COMMANDS) {
+        eprintln!("note: using `{cmd}` (corrected from `{first}`)");
+        return (cmd, &args[1..]);
+    }
+    ("compile", args)
+}
+
+fn looks_like_path(s: &str) -> bool {
+    s.contains('/') || s.contains('\\') || s.contains('.')
+}
+
 fn run(args: &[String]) -> Result<(), ExitCode> {
     let (cmd, rest) = match args.first().map(String::as_str) {
-        Some("compile") | Some("check") | Some("tokens") | Some("ast") | Some("svd")
-        | Some("report") | Some("ide") | Some("app") | Some("lsp") | Some("boards")
-        | Some("ports") | Some("home") | Some("tools") | Some("flash") => {
-            (args[0].as_str(), &args[1..])
-        }
-        Some(_) => ("compile", args),
+        Some(_) => resolve_command(args),
         None => {
             print_help();
             return Ok(());
         }
     };
 
+    if cmd.eq_ignore_ascii_case("version") {
+        println!("voltc {VERSION}");
+        return Ok(());
+    }
     if cmd == "svd" {
         return run_svd(rest);
     }
@@ -79,8 +104,19 @@ fn run(args: &[String]) -> Result<(), ExitCode> {
         }
         let hits = voltc::board::search_boards(q);
         if hits.is_empty() {
-            eprintln!("error: {}", voltc::board::unknown_board_message(q));
-            return Err(ExitCode::from(2));
+            match voltc::board::resolve_board(q) {
+                Ok(r) => {
+                    note_correction(r.board.name, r.corrected_from.as_deref());
+                    println!("name           display                      fqbn");
+                    let fqbn = r.board.fqbn.unwrap_or("-");
+                    println!("  {:<14} {:<28} {}", r.board.name, r.board.display, fqbn);
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return Err(ExitCode::from(2));
+                }
+            }
         }
         println!("name           display                      fqbn");
         for b in hits {
@@ -154,7 +190,28 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        match a.as_str() {
+        let flag;
+        let key = if a.starts_with('-') {
+            flag = canonical_flag(
+                a,
+                &[
+                    "-o",
+                    "--output",
+                    "--target",
+                    "--board",
+                    "--emit",
+                    "-I",
+                    "--std-path",
+                    "--firmware",
+                    "--hex",
+                    "--port",
+                ],
+            )?;
+            flag.as_str()
+        } else {
+            a.as_str()
+        };
+        match key {
             "-o" | "--output" => {
                 i += 1;
                 let p = PathBuf::from(args.get(i).ok_or("missing argument for -o")?);
@@ -195,8 +252,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                         .ok_or("missing argument for --port")?
                         .clone(),
                 );
-            },
-            s if s.starts_with('-') => return Err(format!("unknown option `{s}`")),
+            }
             s => {
                 if out.input.is_some() {
                     return Err(format!("unexpected argument `{s}`"));
@@ -209,13 +265,37 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
     Ok(out)
 }
 
-fn options_from(args: &Args) -> Result<CompileOptions, ExitCode> {
-    let target = target::find_target(&args.target).cloned().ok_or_else(|| {
-        eprintln!("error: {}", voltc::board::unknown_board_message(&args.target));
+fn note_correction(used: &str, typed: Option<&str>) {
+    if let Some(typed) = typed {
+        if !used.eq_ignore_ascii_case(typed) {
+            eprintln!("note: using `{used}` (corrected from `{typed}`)");
+        }
+    }
+}
+
+fn canonical_flag(typed: &str, flags: &[&'static str]) -> Result<String, String> {
+    if flags.iter().any(|f| f.eq_ignore_ascii_case(typed)) {
+        return Ok(typed.to_string());
+    }
+    if let Some(fixed) = voltc::board::unique_typo(typed, flags) {
+        note_correction(fixed, Some(typed));
+        return Ok(fixed.to_string());
+    }
+    Err(format!("unknown option `{typed}`"))
+}
+
+fn resolved_board(args: &Args) -> Result<&'static voltc::board::Board, ExitCode> {
+    let resolved = voltc::board::resolve_board(&args.target).map_err(|e| {
+        eprintln!("error: {e}");
         ExitCode::from(2)
     })?;
-    Ok(CompileOptions {
-        target,
+    note_correction(resolved.board.name, resolved.corrected_from.as_deref());
+    Ok(resolved.board)
+}
+
+fn options_from_board(board: &voltc::board::Board, args: &Args) -> CompileOptions {
+    CompileOptions {
+        target: board.target,
         std_path: args
             .std_path
             .clone()
@@ -225,7 +305,11 @@ fn options_from(args: &Args) -> Result<CompileOptions, ExitCode> {
             paths.extend(voltc::workspace::addon_search_paths());
             paths
         },
-    })
+    }
+}
+
+fn options_from(args: &Args) -> Result<CompileOptions, ExitCode> {
+    Ok(options_from_board(resolved_board(args)?, args))
 }
 
 fn dump_tokens(path: &Path) -> Result<(), ExitCode> {
@@ -271,23 +355,22 @@ fn compile(path: &Path, args: &Args) -> Result<(), ExitCode> {
     if args.emit == "report" {
         return compile_report(path, args);
     }
-    let opts = options_from(args)?;
+    let board = resolved_board(args)?;
+    let opts = options_from_board(board, args);
     match driver::compile_file(path, &opts) {
         Ok(result) => {
             if args.firmware {
-                if let Some(board) = voltc::board::find_board(&args.target) {
-                    let dir = args
-                        .output
-                        .as_ref()
-                        .and_then(|p| p.parent())
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| PathBuf::from("."));
-                    match voltc::toolchain::build_firmware(&result.c_source, board, &dir) {
-                        Ok(fw) => eprintln!("firmware {}", fw.display()),
-                        Err(e) => {
-                            eprintln!("error: {e}");
-                            return Err(ExitCode::from(1));
-                        }
+                let dir = args
+                    .output
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                match voltc::toolchain::build_firmware(&result.c_source, board, &dir) {
+                    Ok(fw) => eprintln!("firmware {}", fw.display()),
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return Err(ExitCode::from(1));
                     }
                 }
             } else if let Some(out) = &args.output {
@@ -354,7 +437,29 @@ fn run_ide(args: &[String]) -> Result<(), ExitCode> {
     let mut window = false;
     let mut i = 0;
     while i < args.len() {
-        match args[i].as_str() {
+        let flag;
+        let key = if args[i].starts_with('-') {
+            flag = canonical_flag(
+                &args[i],
+                &[
+                    "--port",
+                    "--bind",
+                    "--no-open",
+                    "--open",
+                    "--window",
+                    "--app",
+                    "--browser",
+                ],
+            )
+            .map_err(|e| {
+                eprintln!("error: {e}");
+                ExitCode::from(2)
+            })?;
+            flag.as_str()
+        } else {
+            args[i].as_str()
+        };
+        match key {
             "--port" => {
                 i += 1;
                 let p = args.get(i).ok_or_else(|| {
@@ -481,11 +586,19 @@ Pipeline:
 
 fn run_tools(args: &[String]) -> Result<(), ExitCode> {
     let sub = args.first().map(String::as_str).unwrap_or("");
-    if sub == "install" {
+    let install = sub == "install" || voltc::board::unique_typo(sub, &["install"]).is_some();
+    if install {
+        if sub != "install" && !sub.is_empty() {
+            note_correction("install", Some(sub));
+        }
         let pack = args.get(1).map(String::as_str).unwrap_or("");
         if pack.is_empty() {
             eprintln!("error: voltc tools install <avr|arm|esp8266|esp32>");
             return Err(ExitCode::from(2));
+        }
+        match voltc::toolchain::resolve_pack(pack) {
+            Ok(p) => note_correction(p.id, Some(pack)),
+            Err(_) => {}
         }
         eprintln!("downloading {pack} into Documents/Volt/tools …");
         match voltc::toolchain::install(pack) {
@@ -528,11 +641,8 @@ fn run_flash(args: &[String]) -> Result<(), ExitCode> {
         eprintln!("error: missing input file");
         return Err(ExitCode::from(2));
     };
-    let board = voltc::board::find_board(&parsed.target).ok_or_else(|| {
-        eprintln!("error: {}", voltc::board::unknown_board_message(&parsed.target));
-        ExitCode::from(2)
-    })?;
-    let opts = options_from(&parsed)?;
+    let board = resolved_board(&parsed)?;
+    let opts = options_from_board(board, &parsed);
     let result = driver::compile_file(Path::new(&input), &opts).map_err(|err| {
         let _ = print_compile_fail(&err);
         ExitCode::from(1)

@@ -53,6 +53,70 @@ pub fn find_board(name: &str) -> Option<&'static Board> {
         })
 }
 
+/// Exact board match, or a unique nearby typo (`unoo` → `uno`).
+pub struct ResolvedBoard {
+    pub board: &'static Board,
+    pub corrected_from: Option<String>,
+}
+
+pub fn resolve_board(name: &str) -> Result<ResolvedBoard, String> {
+    if let Some(board) = find_board(name) {
+        return Ok(ResolvedBoard {
+            board,
+            corrected_from: None,
+        });
+    }
+    if let Some(board) = unique_board_typo(name) {
+        return Ok(ResolvedBoard {
+            board,
+            corrected_from: Some(name.trim().to_string()),
+        });
+    }
+    Err(unknown_board_message(name))
+}
+
+/// Closest unique name within a small edit distance, or `None` if tied / far.
+pub fn unique_typo<'a>(query: &str, names: &[&'a str]) -> Option<&'a str> {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return None;
+    }
+    let max = typo_max_distance(q.len());
+    if max == 0 {
+        return None;
+    }
+    let mut best: Option<(usize, &'a str)> = None;
+    let mut tie = false;
+    for name in names {
+        let d = edit_distance(&q, &name.to_ascii_lowercase());
+        if d == 0 {
+            return Some(*name);
+        }
+        if d > max {
+            continue;
+        }
+        match best {
+            None => {
+                best = Some((d, name));
+                tie = false;
+            }
+            Some((bd, _)) if d < bd => {
+                best = Some((d, name));
+                tie = false;
+            }
+            Some((bd, prev)) if d == bd && !prev.eq_ignore_ascii_case(name) => {
+                tie = true;
+            }
+            _ => {}
+        }
+    }
+    if tie {
+        None
+    } else {
+        best.map(|(_, n)| n)
+    }
+}
+
 fn board_matches_exact(b: &Board, raw: &str) -> bool {
     eq(b.name, raw)
         || eq(b.display, raw)
@@ -137,14 +201,7 @@ fn closest_boards(query: &str, limit: usize) -> Vec<&'static Board> {
     }
     let mut scored: Vec<(usize, &Board)> = BOARDS
         .iter()
-        .map(|b| {
-            let mut dist = edit_distance(&q, &b.name.to_ascii_lowercase());
-            dist = dist.min(edit_distance(&q, &b.display.to_ascii_lowercase()));
-            for alias in b.aliases {
-                dist = dist.min(edit_distance(&q, &alias.to_ascii_lowercase()));
-            }
-            (dist, b)
-        })
+        .map(|b| (board_edit_distance(&q, b), b))
         .collect();
     scored.sort_by_key(|(d, b)| (*d, b.name));
     let max = (q.len() / 2).max(2);
@@ -154,6 +211,67 @@ fn closest_boards(query: &str, limit: usize) -> Vec<&'static Board> {
         .take(limit)
         .map(|(_, b)| b)
         .collect()
+}
+
+fn unique_board_typo(query: &str) -> Option<&'static Board> {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return None;
+    }
+    let max = typo_max_distance(q.len());
+    if max == 0 {
+        return None;
+    }
+    let mut best: Option<(usize, &Board)> = None;
+    let mut tie = false;
+    for b in BOARDS {
+        let d = board_edit_distance(&q, b);
+        if d == 0 || d > max {
+            continue;
+        }
+        match best {
+            None => {
+                best = Some((d, b));
+                tie = false;
+            }
+            Some((bd, _)) if d < bd => {
+                best = Some((d, b));
+                tie = false;
+            }
+            Some((bd, other)) if d == bd && other.name != b.name => {
+                tie = true;
+            }
+            _ => {}
+        }
+    }
+    if tie {
+        None
+    } else {
+        best.map(|(_, b)| b)
+    }
+}
+
+fn board_edit_distance(query: &str, b: &Board) -> usize {
+    let mut dist = edit_distance(query, &b.name.to_ascii_lowercase());
+    dist = dist.min(edit_distance(query, &b.display.to_ascii_lowercase()));
+    dist = dist.min(edit_distance(query, &b.target.name.to_ascii_lowercase()));
+    if let Some(fqbn) = b.fqbn {
+        dist = dist.min(edit_distance(query, &fqbn.to_ascii_lowercase()));
+    }
+    for alias in b.aliases {
+        dist = dist.min(edit_distance(query, &alias.to_ascii_lowercase()));
+    }
+    dist
+}
+
+fn typo_max_distance(len: usize) -> usize {
+    if len < 3 {
+        0
+    } else if len <= 4 {
+        1
+    } else {
+        2
+    }
 }
 
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -303,7 +421,7 @@ static BOARDS: &[Board] = &[
         usb: &[],
         cc: "cc",
         cc_flags: "-O2",
-        flash: "(run the host binary)",
+        flash: "run firmware",
     },
     // Arduino AVR Boards — same menu Arduino IDE 2 installs on first launch.
     avr328(
@@ -738,7 +856,7 @@ static BOARDS: &[Board] = &[
         package: "esp8266:esp8266",
         usb: &[(0x10C4, 0xEA60), (0x1A86, 0x7523), (0x1A86, 0x55D4)],
         cc: "xtensa-lx106-elf-gcc",
-        cc_flags: "-Os -DICACHE_FLASH",
+        cc_flags: "-nostdlib -ffreestanding -mlongcalls -Os -DICACHE_FLASH -Wl,-e,main",
         flash: "esptool.py --chip esp8266 -p <PORT> write_flash -fs 4MB 0x0 firmware.bin",
     },
     Board {
@@ -796,6 +914,8 @@ mod tests {
         assert_eq!(b.target.family, Family::Esp8266);
         assert_eq!(find_board("nodemcu").unwrap().name, "esp8000");
         assert_eq!(find_board("esp8266:esp8266:generic").unwrap().name, "esp8000");
+        assert!(b.cc_flags.contains("-nostdlib"));
+        assert_eq!(b.cc, "xtensa-lx106-elf-gcc");
     }
 
     #[test]
@@ -828,5 +948,32 @@ mod tests {
         let nonsense = unknown_board_message("zzzz-not-a-board");
         assert!(nonsense.contains("unknown board"));
         assert!(nonsense.contains("voltc boards"));
+    }
+
+    #[test]
+    fn autocorrects_unique_board_typos() {
+        let r = resolve_board("unoo").expect("unoo");
+        assert_eq!(r.board.name, "uno");
+        assert_eq!(r.corrected_from.as_deref(), Some("unoo"));
+        let r = resolve_board("esp800").expect("esp800");
+        assert_eq!(r.board.name, "esp8000");
+        let r = resolve_board("picoo").expect("picoo");
+        assert_eq!(r.board.name, "pico");
+        let r = resolve_board("nodemcu").expect("alias");
+        assert_eq!(r.board.name, "esp8000");
+        assert!(r.corrected_from.is_none());
+        assert!(resolve_board("esp").is_err());
+        assert!(resolve_board("zzzz-not-a-board").is_err());
+    }
+
+    #[test]
+    fn unique_typo_picks_one_close_name() {
+        let names = ["compile", "check", "flash", "tools", "boards"];
+        assert_eq!(unique_typo("complie", &names), Some("compile"));
+        assert_eq!(unique_typo("chekc", &names), Some("check"));
+        assert_eq!(unique_typo("tool", &names), Some("tools"));
+        assert_eq!(unique_typo("board", &names), Some("boards"));
+        assert_eq!(unique_typo("compile", &names), Some("compile"));
+        assert_eq!(unique_typo("xyz", &names), None);
     }
 }

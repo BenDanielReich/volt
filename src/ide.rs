@@ -6,7 +6,7 @@ use crate::diagnostic::Level;
 use crate::driver::{self, CompileError, CompileOptions, CompileResult};
 use crate::lexer::Lexer;
 use crate::source::SourceMap;
-use crate::target::{self, Target};
+use crate::target::Target;
 use crate::token::TokenKind;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -45,11 +45,9 @@ pub struct AnalyzeResult {
 }
 
 pub fn options_for(target_name: &str, std_path: Option<PathBuf>) -> Result<CompileOptions, String> {
-    let target = target::find_target(target_name)
-        .cloned()
-        .ok_or_else(|| crate::board::unknown_board_message(target_name))?;
+    let board = crate::board::resolve_board(target_name)?.board;
     Ok(CompileOptions {
-        target,
+        target: board.target,
         std_path: std_path.unwrap_or_else(driver::default_std_path),
         include_paths: crate::workspace::addon_search_paths(),
     })
@@ -154,10 +152,12 @@ pub fn completions(src: &str, offset: usize) -> Vec<Completion> {
     if prefix.is_empty() {
         return out;
     }
-    out.retain(|c| {
-        c.label.starts_with(&prefix) || c.insert.starts_with(&prefix)
-    });
-    out
+    let mut ranked: Vec<(u32, Completion)> = out
+        .into_iter()
+        .filter_map(|c| suggest_score(&c.label, &c.insert, &prefix).map(|s| (s, c)))
+        .collect();
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.label.cmp(&b.1.label)));
+    ranked.into_iter().map(|(_, c)| c).collect()
 }
 
 pub fn hover(src: &str, offset: usize, target: Target) -> Option<Hover> {
@@ -225,31 +225,103 @@ pub fn builtin_completions() -> Vec<Completion> {
             label: "setup/loop".into(),
             kind: "snippet".into(),
             detail: "Arduino-style setup + loop".into(),
-            insert: "function setup() {\n    \n}\n\nfunction loop() {\n    \n}\n".into(),
+            insert: "function setup() {\n    $0\n}\n\nfunction loop() {\n    \n}\n".into(),
         },
         Completion {
             label: "reg".into(),
             kind: "snippet".into(),
             detail: "a chip register".into(),
-            insert: "reg u8 NAME @ 0x00 {\n    bit0: 0,\n}\n".into(),
+            insert: "reg u8 ${1:NAME} @ 0x00 {\n    ${2:bit0}: 0,\n}\n".into(),
         },
         Completion {
             label: "interrupt".into(),
             kind: "snippet".into(),
             detail: "run this when the chip interrupts".into(),
-            insert: "#[interrupt(\"TIMER0_OVF\")]\nfunction on_tick() {\n    \n}\n".into(),
+            insert: "#[interrupt(\"${1:TIMER0_OVF}\")]\nfunction ${2:on_tick}() {\n    $0\n}\n".into(),
         },
         Completion {
             label: "match".into(),
             kind: "snippet".into(),
             detail: "pick a branch".into(),
-            insert: "match (x) {\n    _ => { }\n}\n".into(),
+            insert: "match (${1:x}) {\n    _ => { $0 }\n}\n".into(),
         },
         Completion {
             label: "pinmode".into(),
             kind: "function".into(),
             detail: "set a pin as input or output".into(),
-            insert: "pinmode(LED_BUILTIN, PinMode.Output)".into(),
+            insert: "pinmode(${1:LED_BUILTIN}, ${2:PinMode.Output})".into(),
+        },
+        Completion {
+            label: "digital_write".into(),
+            kind: "function".into(),
+            detail: "set a pin high or low".into(),
+            insert: "digital_write(${1:LED_BUILTIN}, ${2:Level.High})".into(),
+        },
+        Completion {
+            label: "digital_read".into(),
+            kind: "function".into(),
+            detail: "read a digital pin".into(),
+            insert: "digital_read(${1:LED_BUILTIN})".into(),
+        },
+        Completion {
+            label: "analog_read".into(),
+            kind: "function".into(),
+            detail: "read an analog pin".into(),
+            insert: "analog_read(${1:A0})".into(),
+        },
+        Completion {
+            label: "delay_ms".into(),
+            kind: "function".into(),
+            detail: "wait this many milliseconds".into(),
+            insert: "delay_ms(${1:500})".into(),
+        },
+        Completion {
+            label: "delay_us".into(),
+            kind: "function".into(),
+            detail: "wait this many microseconds".into(),
+            insert: "delay_us(${1:10})".into(),
+        },
+        Completion {
+            label: "LED_BUILTIN".into(),
+            kind: "constant".into(),
+            detail: "the onboard LED pin".into(),
+            insert: "LED_BUILTIN".into(),
+        },
+        Completion {
+            label: "PinMode.Output".into(),
+            kind: "enum".into(),
+            detail: "the pin sends a signal".into(),
+            insert: "PinMode.Output".into(),
+        },
+        Completion {
+            label: "PinMode.Input".into(),
+            kind: "enum".into(),
+            detail: "the pin listens".into(),
+            insert: "PinMode.Input".into(),
+        },
+        Completion {
+            label: "PinMode.InputPullup".into(),
+            kind: "enum".into(),
+            detail: "input with internal pull-up".into(),
+            insert: "PinMode.InputPullup".into(),
+        },
+        Completion {
+            label: "Level.High".into(),
+            kind: "enum".into(),
+            detail: "on / 1".into(),
+            insert: "Level.High".into(),
+        },
+        Completion {
+            label: "Level.Low".into(),
+            kind: "enum".into(),
+            detail: "off / 0".into(),
+            insert: "Level.Low".into(),
+        },
+        Completion {
+            label: "#include".into(),
+            kind: "snippet".into(),
+            detail: "pull in a library".into(),
+            insert: "#include <${1:volt/board}>\n".into(),
         },
         Completion {
             label: "#change".into(),
@@ -332,12 +404,65 @@ const EXTRA_HOVER: &[(&str, &str)] = &[
     ),
 ];
 
+/// Rank a suggestion against the typed prefix. Lower is better. `None` = hide.
+fn suggest_score(label: &str, insert: &str, prefix: &str) -> Option<u32> {
+    score_against(label, prefix).or_else(|| score_against(insert, prefix))
+}
+
+fn score_against(candidate: &str, prefix: &str) -> Option<u32> {
+    if prefix.is_empty() {
+        return Some(100);
+    }
+    let cand = candidate.to_ascii_lowercase();
+    let pre = prefix.to_ascii_lowercase();
+    if cand == pre {
+        return Some(0);
+    }
+    if cand.starts_with(&pre) {
+        return Some(1);
+    }
+    if pre.len() >= 2 && cand.contains(&pre) {
+        return Some(2);
+    }
+    if pre.len() >= 3 && is_subsequence(&cand, &pre) {
+        return Some(3);
+    }
+    if pre.len() >= 3 {
+        let head: String = cand.chars().take(pre.chars().count()).collect();
+        if !head.is_empty() && edit_distance(&pre, &head) == 1 {
+            return Some(4);
+        }
+    }
+    None
+}
+
+fn is_subsequence(hay: &str, needle: &str) -> bool {
+    let mut it = hay.chars();
+    needle.chars().all(|c| it.any(|h| h == c))
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
 fn ident_prefix(src: &str, offset: usize) -> String {
     let bytes = src.as_bytes();
     let mut i = offset.min(bytes.len());
     while i > 0 {
         let c = bytes[i - 1] as char;
-        if c.is_ascii_alphanumeric() || c == '_' {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '#' || c == '.' {
             i -= 1;
         } else {
             break;
@@ -409,6 +534,30 @@ mod tests {
     }
 
     #[test]
+    fn completions_fuzzy_typo() {
+        let c = completions("pinmde", 6);
+        assert!(
+            c.iter().any(|c| c.label == "pinmode"),
+            "typed pinmde should suggest pinmode"
+        );
+    }
+
+    #[test]
+    fn completions_stdlib_as_you_type() {
+        let c = completions("del", 3);
+        assert!(c.iter().any(|c| c.label == "delay_ms"));
+        let c = completions("dig", 3);
+        assert!(c.iter().any(|c| c.label == "digital_write"));
+    }
+
+    #[test]
+    fn completions_hash_include() {
+        let src = "#inc";
+        let c = completions(src, src.len());
+        assert!(c.iter().any(|c| c.label == "#include"));
+    }
+
+    #[test]
     fn hover_keyword() {
         let h = hover("function setup() {}", 0, HOST).unwrap();
         assert_eq!(h.title, "function");
@@ -426,9 +575,14 @@ mod tests {
 
     #[test]
     fn unknown_board_is_a_compiler_error() {
-        let err = options_for("unoo", None).unwrap_err();
-        assert!(err.contains("unknown board `unoo`"));
-        assert!(err.contains("did you mean:"));
-        assert!(err.contains("uno"));
+        let err = options_for("zzzz-not-a-board", None).unwrap_err();
+        assert!(err.contains("unknown board `zzzz-not-a-board`"));
+        assert!(err.contains("voltc boards"));
+    }
+
+    #[test]
+    fn mistyped_board_is_corrected() {
+        let opts = options_for("unoo", None).expect("unoo → uno");
+        assert_eq!(opts.target.name, "uno");
     }
 }

@@ -5,7 +5,6 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 
 use crate::ide::{self, AnalyzeResult};
-use crate::target;
 
 const INDEX_HTML: &str = include_str!("../ide/web/index.html");
 
@@ -381,7 +380,7 @@ fn analyze_json(body: &str) -> serde_json::Value {
                 if req.firmware && result.ok {
                     if let (Some(c), Some(board)) = (
                         result.c_source.as_ref(),
-                        crate::board::find_board(&req.target),
+                        crate::board::resolve_board(&req.target).ok().map(|r| r.board),
                     ) {
                         if let Ok(ws) = crate::workspace::ensure() {
                             let out = ws.root.join("build").join(
@@ -429,7 +428,9 @@ fn complete_json(body: &str) -> serde_json::Value {
 fn hover_json(body: &str) -> serde_json::Value {
     match serde_json::from_str::<CursorReq>(body) {
         Ok(req) => {
-            let target = target::find_target(&req.target).copied().unwrap_or(crate::target::HOST);
+            let target = crate::board::resolve_board(&req.target)
+                .map(|r| r.board.target)
+                .unwrap_or(crate::target::HOST);
             match ide::hover(&req.source, req.offset, target) {
                 Some(h) => serde_json::to_value(h).unwrap_or(serde_json::json!({})),
                 None => serde_json::json!({}),
@@ -476,8 +477,8 @@ fn tools_install_json(body: &str) -> serde_json::Value {
     });
     let pack = if !req.pack.is_empty() {
         req.pack
-    } else if let Some(b) = crate::board::find_board(&req.board) {
-        crate::toolchain::pack_id_for_board(b)
+    } else if let Ok(r) = crate::board::resolve_board(&req.board) {
+        crate::toolchain::pack_id_for_board(r.board)
             .unwrap_or("")
             .to_string()
     } else {
@@ -506,8 +507,11 @@ struct FlashReq {
 fn flash_json(body: &str) -> serde_json::Value {
     match serde_json::from_str::<FlashReq>(body) {
         Ok(req) => {
-            let Some(board) = crate::board::find_board(&req.target) else {
-                return serde_json::json!({ "ok": false, "error": crate::board::unknown_board_message(&req.target) });
+            let board = match crate::board::resolve_board(&req.target) {
+                Ok(r) => r.board,
+                Err(e) => {
+                    return serde_json::json!({ "ok": false, "error": e });
+                }
             };
             let Ok(opts) = ide::options_for(&req.target, None) else {
                 return serde_json::json!({ "ok": false, "error": "bad board" });
@@ -557,5 +561,12 @@ mod tests {
         assert!(super::INDEX_HTML.contains("data-group=\"files\""));
         assert!(super::INDEX_HTML.contains("group-head"));
         assert!(!super::INDEX_HTML.contains("<summary"));
+    }
+
+    #[test]
+    fn bundled_html_suggests_as_you_type() {
+        assert!(super::INDEX_HTML.contains("quickSuggestions"));
+        assert!(super::INDEX_HTML.contains("editor.action.triggerSuggest"));
+        assert!(super::INDEX_HTML.contains("wordUntil"));
     }
 }
